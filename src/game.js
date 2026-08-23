@@ -7,22 +7,41 @@ import {
 import { Weather, WEATHERS } from './weather.js'
 import { SUCCESS_LINES } from './ui.js'
 
-const STATE = {
-  IDLE: 'idle',     // 抜くブロックを選ぶ
-  PULL: 'pull',     // 引き抜き中
-  PLACE: 'place',   // 上へ運搬中（アニメーション）
-  SETTLE: 'settle', // 置いた直後、落ち着くのを待つ
-  OVER: 'over',
+/* ------------------------------------------------------------------
+ * ゲーム状態
+ *   SELECT         抜くブロックを選ぶ
+ *   PULLING        引き抜き中（完全に抜けるまで次へ進めない）
+ *   PLACEMENT      置き場所を選ぶ（最上段の空きスロットから）
+ *   PLACING        選んだ場所へ下ろすアニメーション
+ *   SETTLING       物理が落ち着くのを待つ
+ *   WEATHER_CHANGE 次の天候を発表する
+ *   GAMEOVER
+ * ------------------------------------------------------------------ */
+export const STATE = {
+  SELECT: 'SELECT',
+  PULLING: 'PULLING',
+  PLACEMENT: 'PLACEMENT',
+  PLACING: 'PLACING',
+  SETTLING: 'SETTLING',
+  WEATHER_CHANGE: 'WEATHER_CHANGE',
+  GAMEOVER: 'GAMEOVER',
 }
 
-/** 引き抜ける最大距離 */
-const MAX_PULL = BLOCK.len * 0.95
-/** ここまで抜いたら「上に置く」ボタンが出る */
-const PLACE_THRESHOLD = BLOCK.len * 0.66
+/** 引き抜ける最大距離。タワーの外へ完全に出せるだけの余裕を持たせる */
+const MAX_PULL = BLOCK.len * 1.35
+/** ここまで動かさないと「抜けた」と判定しない（重なり判定と併用） */
+const MIN_PULL_DISTANCE = BLOCK.len * 0.9
+/** 重なり判定に使うすき間。これだけ離れていれば重なっていないとみなす */
+const CLEAR_MARGIN = 0.02
+
 /** 引き抜き速度の上限。速すぎると周りのブロックを弾き飛ばしてしまう */
 const MAX_GRAB_SPEED = 1.4
 /** 置いたあと落ち着くのを待つ時間 */
 const SETTLE_TIME = 1.1
+/** 天候発表を見せる時間 */
+const WEATHER_TIME = 1.8
+/** 配置モードでブロックを浮かせておく高さ */
+const HOVER_HEIGHT = 0.6
 
 /** 崩壊判定：本来あるべき高さからこれだけ落ちたブロックを「落ちた」とみなす */
 const FALL_DROP = BLOCK.hei * 2
@@ -40,10 +59,12 @@ export class Game {
 
     this.raycaster = new THREE.Raycaster()
     this.ndc = new THREE.Vector2()
+    this.pointerNdc = new THREE.Vector2()
 
     this.world = null
     this.tower = null
     this.weather = null
+    this.markers = []
 
     this.bindEvents()
     this.reset()
@@ -54,6 +75,7 @@ export class Game {
   reset() {
     if (this.tower) this.tower.dispose()
     if (this.weather) this.weather.dispose()
+    this.clearMarkers()
 
     this.world = createWorld()
     this.tower = new Tower(this.scene, this.world)
@@ -62,27 +84,32 @@ export class Game {
     this.score = 0
     this.turn = 0
     this.topLevel = LEVELS
-    this.topSlot = 0
+    this.topFilled = [false, false, false]
 
     this.selected = null
     this.hovered = null
     this.dragging = false
     this.orbiting = false
     this.canceling = false
+    this.awaitRelease = false
     this.pull = 0
     this.pullTarget = 0
+    this.hoverSlot = 1
     this.tween = null
     this.settleT = 0
+    this.weatherT = 0
+    this.pullNagCooldown = 0
     // 開始直後の初期振動で雷神が驚かないよう、少し猶予を置く
     this.dangerCooldown = 2.0
 
-    this.state = STATE.IDLE
+    this.state = STATE.SELECT
 
     this.weather.set(WEATHERS.CLEAR, true)
     this.ui.setWeather(WEATHERS.CLEAR)
+    this.ui.setWindy(false)
     this.ui.setScore(0)
     this.ui.hideGameOver()
-    this.ui.hidePlace()
+    this.ui.setPrompt('ブロックをクリックして選ぼう')
     this.ui.say('崩さないように、そーっと抜くんだぞ！', 3800)
   }
 
@@ -100,17 +127,20 @@ export class Game {
     }, { passive: false })
 
     window.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') this.cancelPull()
+      if (e.key === 'Escape') this.cancel()
     })
 
-    this.ui.onPlace(() => this.startPlace())
     this.ui.onRetry(() => this.reset())
   }
 
-  pick(e) {
+  setNdc(e) {
     this.ndc.x = (e.clientX / window.innerWidth) * 2 - 1
     this.ndc.y = -(e.clientY / window.innerHeight) * 2 + 1
-    this.raycaster.setFromCamera(this.ndc, this.camera)
+    return this.ndc
+  }
+
+  pick(e) {
+    this.raycaster.setFromCamera(this.setNdc(e), this.camera)
     const hits = this.raycaster.intersectObjects(this.tower.meshes(), false)
     for (const h of hits) {
       const block = h.object.userData.block
@@ -119,33 +149,49 @@ export class Game {
     return null
   }
 
-  onPointerDown(e) {
-    if (this.state === STATE.OVER) return
+  pickMarker(e) {
+    if (!this.markers.length) return null
+    this.raycaster.setFromCamera(this.setNdc(e), this.camera)
+    const hits = this.raycaster.intersectObjects(this.markers.map((m) => m.mesh), false)
+    return hits.length ? hits[0].object.userData.marker : null
+  }
 
-    // 右クリックは引き抜きのキャンセル
-    if (e.button === 2) {
-      this.cancelPull()
-      return
-    }
+  onPointerDown(e) {
+    if (this.state === STATE.GAMEOVER) return
+    if (e.button === 2) { this.cancel(); return }
     if (e.button !== 0) return
 
-    if (this.state === STATE.IDLE || this.state === STATE.PULL) {
-      const hit = this.pick(e)
+    if (this.state === STATE.PLACEMENT) {
+      const marker = this.pickMarker(e)
+      if (marker && !this.awaitRelease) {
+        this.hoverSlot = marker.slot
+        this.confirmPlacement()
+        return
+      }
+      // 置き場所以外を掴んだらカメラ操作
+      this.startOrbit(e)
+      return
+    }
 
-      if (this.state === STATE.IDLE && hit) {
+    if (this.state === STATE.SELECT || this.state === STATE.PULLING) {
+      const hit = this.pick(e)
+      if (this.state === STATE.SELECT && hit) {
         this.select(hit)
         this.beginDrag(e)
         return
       }
-      if (this.state === STATE.PULL && hit === this.selected) {
+      if (this.state === STATE.PULLING && hit === this.selected) {
         this.beginDrag(e)
         return
       }
-      // ブロック以外を掴んだらカメラ操作
-      this.orbiting = true
-      this.orbit.start(e)
-      this.renderer.domElement.classList.add('grabbing')
+      this.startOrbit(e)
     }
+  }
+
+  startOrbit(e) {
+    this.orbiting = true
+    this.orbit.start(e)
+    this.renderer.domElement.classList.add('grabbing')
   }
 
   onPointerMove(e) {
@@ -166,8 +212,15 @@ export class Game {
       return
     }
 
+    if (this.state === STATE.PLACEMENT) {
+      const marker = this.pickMarker(e)
+      this.renderer.domElement.classList.toggle('pointing', !!marker)
+      if (marker) this.hoverSlot = marker.slot
+      return
+    }
+
     // ホバー表示（掴めるブロックの上ではカーソルを変える）
-    if (this.state === STATE.IDLE) {
+    if (this.state === STATE.SELECT) {
       const hit = this.pick(e)
       if (hit !== this.hovered) {
         if (this.hovered && this.hovered !== this.selected) {
@@ -183,7 +236,14 @@ export class Game {
   onPointerUp() {
     this.dragging = false
     this.orbiting = false
+    this.awaitRelease = false
     this.renderer.domElement.classList.remove('grabbing')
+
+    // 中途半端なところで手を離したら、まだ抜けていないことを伝える
+    if (this.state === STATE.PULLING && this.pullNagCooldown <= 0 && this.actualPull() > 0.25) {
+      this.ui.say('もう少し引き抜こう！', 2200)
+      this.pullNagCooldown = 3.0
+    }
   }
 
   beginDrag(e) {
@@ -228,10 +288,11 @@ export class Game {
 
   select(block) {
     this.selected = block
-    this.state = STATE.PULL
+    this.state = STATE.PULLING
     this.pull = 0
     this.pullTarget = 0
     this.canceling = false
+    this.pullNagCooldown = 0
 
     block.outline.visible = true
     block.material.emissive.setHex(0x6b4d00)
@@ -251,6 +312,7 @@ export class Game {
 
     setGrabbed(block.body)
     this.tower.wakeAll()
+    this.ui.setPrompt('ドラッグして完全に引き抜こう')
   }
 
   deselect() {
@@ -261,20 +323,71 @@ export class Game {
       this.selected.material.emissive.setHex(0x000000)
       this.selected = null
     }
-    this.ui.hidePlace()
   }
 
-  /** 引き抜きをやめて元の位置へ戻す */
-  cancelPull() {
-    if (this.state !== STATE.PULL) return
-    this.canceling = true
-    this.pullTarget = 0
-    this.ui.hidePlace()
+  /** 引き抜き方向に、実際にどれだけ動いたか（物理の結果を見る） */
+  actualPull() {
+    if (!this.selected) return 0
+    const p = this.selected.body.position
+    const d = this.pullDir
+    return (p.x - this.origPos.x) * d.x
+      + (p.y - this.origPos.y) * d.y
+      + (p.z - this.origPos.z) * d.z
   }
 
-  updatePull(dt) {
+  /**
+   * 完全に引き抜けたか。
+   * 「元の位置から十分離れている」かつ「どのブロックとも重なっていない」で判定する。
+   */
+  isFullyPulled() {
+    if (!this.selected) return false
+    if (this.actualPull() < MIN_PULL_DISTANCE) return false
+
+    const me = this.selected.body
+    me.updateAABB()
+    for (const b of this.tower.blocks) {
+      if (b === this.selected) continue
+      b.body.updateAABB()
+      if (aabbOverlaps(me.aabb, b.body.aabb, CLEAR_MARGIN)) return false
+    }
+    return true
+  }
+
+  /** 引き抜き・配置をやめて元に戻す */
+  cancel() {
+    if (this.state === STATE.PULLING) {
+      this.canceling = true
+      this.pullTarget = 0
+      return
+    }
+    if (this.state === STATE.PLACEMENT) {
+      // 配置をやめて、ブロックを元の穴へ戻す（このターンをやり直し）
+      this.exitPlacement()
+      const body = this.selected.body
+      // 空中に浮いているので、いったん引き抜き軸の上へ戻してから押し込む
+      body.position.set(
+        this.origPos.x + this.pullDir.x * MAX_PULL,
+        this.origPos.y + this.pullDir.y * MAX_PULL,
+        this.origPos.z + this.pullDir.z * MAX_PULL
+      )
+      body.quaternion.copy(this.origQuat)
+      setGrabbed(body)
+      body.collisionResponse = true
+
+      this.pull = MAX_PULL
+      this.pullTarget = 0
+      // canceling を立てておかないと、抜けきった状態なので即座に配置モードへ戻ってしまう
+      this.canceling = true
+      this.state = STATE.PULLING
+      this.ui.setPrompt('もどしています……')
+    }
+  }
+
+  updatePulling(dt) {
     const block = this.selected
     if (!block) return
+
+    this.pullNagCooldown -= dt
 
     // 目標値へなめらかに追従させる（急激な移動で物理が壊れるのを防ぐ）
     this.pull += (this.pullTarget - this.pull) * Math.min(1, dt * 6)
@@ -285,11 +398,7 @@ export class Game {
     const tz = this.origPos.z + d.z * this.pull
 
     const body = block.body
-    const vx = (tx - body.position.x) / dt
-    const vy = (ty - body.position.y) / dt
-    const vz = (tz - body.position.z) / dt
-
-    body.velocity.set(vx, vy, vz)
+    body.velocity.set((tx - body.position.x) / dt, (ty - body.position.y) / dt, (tz - body.position.z) / dt)
     const sp = body.velocity.length()
     if (sp > MAX_GRAB_SPEED) body.velocity.scale(MAX_GRAB_SPEED / sp, body.velocity)
 
@@ -303,105 +412,191 @@ export class Game {
       setReleased(body)
       this.deselect()
       this.canceling = false
-      this.state = STATE.IDLE
+      this.state = STATE.SELECT
+      this.ui.setPrompt('ブロックをクリックして選ぼう')
       return
     }
 
-    if (!this.canceling && this.pull >= PLACE_THRESHOLD) this.ui.showPlace()
-    else this.ui.hidePlace()
+    if (!this.canceling && this.isFullyPulled()) this.enterPlacement()
   }
 
-  /* ================= 上へ積む ================= */
+  /* ================= 配置モード ================= */
 
-  startPlace() {
-    if (this.state !== STATE.PULL || !this.selected) return
-    if (this.pull < PLACE_THRESHOLD) return
+  freeSlots() {
+    const out = []
+    for (let i = 0; i < 3; i++) if (!this.topFilled[i]) out.push(i)
+    return out
+  }
 
+  enterPlacement() {
     const block = this.selected
     const body = block.body
-    const t = slotTransform(this.topLevel, this.topSlot)
-    // ほんの少しだけ浮かせて置く（めり込み防止）
-    t.pos.y += 0.04
 
-    const cur = body.position.clone()
-    const flyY = Math.max(cur.y, t.pos.y) + 1.0
-
-    // 運搬中は他のブロックに触れないようにして、強制的に動かす
     setKinematic(body)
     body.collisionResponse = false
 
-    this.tween = {
-      t: 0,
-      total: 1.1,
-      segs: [
-        { dur: 0.35, from: cur, to: new CANNON.Vec3(cur.x, flyY, cur.z) },
-        { dur: 0.45, from: new CANNON.Vec3(cur.x, flyY, cur.z), to: new CANNON.Vec3(t.pos.x, flyY, t.pos.z) },
-        { dur: 0.30, from: new CANNON.Vec3(t.pos.x, flyY, t.pos.z), to: t.pos.clone() },
-      ],
-      q0: body.quaternion.clone(),
-      q1: t.quat.clone(),
-      target: t,
-      level: this.topLevel,
-    }
+    // 「ここに置かれる」ことが分かるように半透明にする
+    block.material.transparent = true
+    block.material.opacity = 0.55
+    block.material.depthWrite = false
 
-    this.ui.hidePlace()
-    this.state = STATE.PLACE
+    this.buildMarkers()
+    const free = this.freeSlots()
+    this.hoverSlot = free.includes(1) ? 1 : free[0]
+    // ドラッグから連続で置いてしまわないよう、一度指を離させる
+    this.awaitRelease = this.dragging
+    this.dragging = false
+
+    this.state = STATE.PLACEMENT
+    this.ui.setPrompt('置き場所をクリックして決めよう（端に置くほど不安定！）')
+    this.ui.say('どこに置く？ まんなかが安全だぞ！', 2600)
   }
 
-  updatePlace(dt) {
+  buildMarkers() {
+    this.clearMarkers()
+    for (const slot of this.freeSlots()) {
+      const { pos, quat } = slotTransform(this.topLevel, slot)
+      const mesh = new THREE.Mesh(
+        this.tower.geometry,
+        new THREE.MeshBasicMaterial({
+          color: 0xffd23f,
+          transparent: true,
+          opacity: 0.16,
+          depthWrite: false,
+        })
+      )
+      mesh.position.set(pos.x, pos.y, pos.z)
+      mesh.quaternion.set(quat.x, quat.y, quat.z, quat.w)
+      // 少し小さくして、候補どうしのすき間を見えるようにする
+      mesh.scale.setScalar(0.96)
+
+      const edge = new THREE.LineSegments(
+        this.tower.edgesGeometry,
+        new THREE.LineBasicMaterial({ color: 0xffd23f, transparent: true, opacity: 0.9, depthTest: false })
+      )
+      edge.renderOrder = 998
+      mesh.add(edge)
+
+      const marker = { slot, mesh, edge, pos }
+      mesh.userData.marker = marker
+      this.scene.add(mesh)
+      this.markers.push(marker)
+    }
+  }
+
+  clearMarkers() {
+    for (const m of this.markers) {
+      this.scene.remove(m.mesh)
+      m.mesh.material.dispose()
+      m.edge.material.dispose()
+    }
+    this.markers = []
+  }
+
+  updatePlacement(dt) {
+    // 選ばれている候補を強調する
+    for (const m of this.markers) {
+      const on = m.slot === this.hoverSlot
+      m.mesh.material.opacity += ((on ? 0.5 : 0.05) - m.mesh.material.opacity) * Math.min(1, dt * 10)
+      m.edge.material.opacity = on ? 1.0 : 0.22
+      m.edge.material.color.setHex(on ? 0xffffff : 0xffd23f)
+    }
+
+    // ブロックを候補位置の真上へふわりと移動させる（配置プレビュー）
+    const { pos, quat } = slotTransform(this.topLevel, this.hoverSlot)
+    const body = this.selected.body
+    const k = Math.min(1, dt * 8)
+    body.position.x += (pos.x - body.position.x) * k
+    body.position.y += (pos.y + HOVER_HEIGHT - body.position.y) * k
+    body.position.z += (pos.z - body.position.z) * k
+    body.velocity.setZero()
+
+    const q = new CANNON.Quaternion()
+    body.quaternion.slerp(quat, k, q)
+    body.quaternion.copy(q)
+  }
+
+  exitPlacement() {
+    this.clearMarkers()
+    const block = this.selected
+    if (block) {
+      block.material.transparent = false
+      block.material.opacity = 1
+      block.material.depthWrite = true
+    }
+  }
+
+  confirmPlacement() {
+    const block = this.selected
+    const body = block.body
+    const slot = this.hoverSlot
+    const t = slotTransform(this.topLevel, slot)
+    // ほんの少しだけ浮かせて置く（めり込み防止）
+    t.pos.y += 0.04
+
+    this.tween = {
+      t: 0,
+      dur: 0.32,
+      from: body.position.clone(),
+      to: t.pos.clone(),
+      q0: body.quaternion.clone(),
+      q1: t.quat.clone(),
+      level: this.topLevel,
+      slot,
+    }
+
+    this.clearMarkers()
+    this.state = STATE.PLACING
+    this.ui.setPrompt('')
+  }
+
+  updatePlacing(dt) {
     const tw = this.tween
     const body = this.selected.body
     tw.t += dt
 
-    // 3区間（持ち上げ → 水平移動 → 下ろす）を順に進む
-    let rest = tw.t
-    let pos = null
-    for (const seg of tw.segs) {
-      if (rest <= seg.dur) {
-        const k = seg.dur > 0 ? rest / seg.dur : 1
-        const e = k * k * (3 - 2 * k) // smoothstep
-        pos = seg.from.clone()
-        seg.from.lerp(seg.to, e, pos)
-        break
-      }
-      rest -= seg.dur
-    }
+    const k = clamp(tw.t / tw.dur, 0, 1)
+    const e = k * k * (3 - 2 * k) // smoothstep
+    const pos = new CANNON.Vec3()
+    tw.from.lerp(tw.to, e, pos)
+    body.position.copy(pos)
+    body.velocity.setZero()
 
-    const progress = clamp(tw.t / tw.total, 0, 1)
     const q = new CANNON.Quaternion()
-    tw.q0.slerp(tw.q1, Math.min(1, progress * 1.6), q)
+    tw.q0.slerp(tw.q1, e, q)
     body.quaternion.copy(q)
 
-    if (pos) {
-      body.position.copy(pos)
-      body.velocity.setZero()
-      return
-    }
+    if (k < 1) return
 
     // 到着 → 物理演算へ戻す
-    body.position.copy(tw.target.pos)
+    const block = this.selected
+    block.material.transparent = false
+    block.material.opacity = 1
+    block.material.depthWrite = true
+
+    body.position.copy(tw.to)
     body.quaternion.copy(tw.q1)
     body.collisionResponse = true
     setDynamic(body)
 
-    this.selected.level = tw.level
-    this.selected.slot = this.topSlot
+    block.level = tw.level
+    block.slot = tw.slot
 
-    this.topSlot++
-    if (this.topSlot > 2) {
-      this.topSlot = 0
+    this.topFilled[tw.slot] = true
+    if (this.topFilled.every(Boolean)) {
       this.topLevel++
+      this.topFilled = [false, false, false]
     }
 
     this.deselect()
     this.tween = null
     this.settleT = 0
-    this.state = STATE.SETTLE
+    this.state = STATE.SETTLING
   }
 
   /* ================= ターン進行 ================= */
 
-  updateSettle(dt) {
+  updateSettling(dt) {
     this.settleT += dt
     if (this.settleT < SETTLE_TIME) return
 
@@ -413,16 +608,23 @@ export class Game {
     this.weather.set(next)
     this.ui.setWeather(next)
     this.ui.flashWeather(next)
+    this.ui.setWindy(next.key === 'WIND')
+    this.ui.say(next.line, 3200)
 
-    // 天候のセリフを優先し、晴れのときだけ成功セリフを出す
-    if (next.key === 'CLEAR') {
+    this.weatherT = 0
+    this.state = STATE.WEATHER_CHANGE
+  }
+
+  updateWeatherChange(dt) {
+    this.weatherT += dt
+    if (this.weatherT < WEATHER_TIME) return
+
+    if (this.weather.current.key === 'CLEAR') {
       const line = SUCCESS_LINES[Math.floor(Math.random() * SUCCESS_LINES.length)]
-      this.ui.say(line, 2200)
-    } else {
-      this.ui.say(next.line, 3000)
+      this.ui.say(line, 2000)
     }
-
-    this.state = STATE.IDLE
+    this.state = STATE.SELECT
+    this.ui.setPrompt('ブロックをクリックして選ぼう')
   }
 
   /* ================= 崩壊判定 ================= */
@@ -444,15 +646,15 @@ export class Game {
   }
 
   gameOver() {
-    this.state = STATE.OVER
+    this.state = STATE.GAMEOVER
     // 掴んだままだと物理が止まらないので、手を離してから終了する
-    if (this.selected && this.selected.body.type === CANNON.Body.DYNAMIC) {
-      setReleased(this.selected.body)
-    }
+    this.exitPlacement()
+    if (this.selected) setReleased(this.selected.body)
     this.deselect()
     this.dragging = false
     this.orbiting = false
-    this.ui.hidePlace()
+    this.ui.setPrompt('')
+    this.ui.setWindy(false)
     this.ui.say('あ〜〜〜！ くずれちゃった……', 4000)
     this.ui.showGameOver(this.score)
   }
@@ -472,10 +674,14 @@ export class Game {
   update(rawDt) {
     const dt = clamp(rawDt, 1 / 120, 1 / 20)
 
-    if (this.state === STATE.PULL) this.updatePull(dt)
-    else if (this.state === STATE.PLACE) this.updatePlace(dt)
+    switch (this.state) {
+      case STATE.PULLING: this.updatePulling(dt); break
+      case STATE.PLACEMENT: this.updatePlacement(dt); break
+      case STATE.PLACING: this.updatePlacing(dt); break
+      default: break
+    }
 
-    if (this.state !== STATE.OVER) {
+    if (this.state !== STATE.GAMEOVER) {
       this.weather.update(dt, this.tower)
     }
 
@@ -483,9 +689,10 @@ export class Game {
     this.world.step(1 / 120, dt, 6)
     this.tower.sync()
 
-    if (this.state === STATE.SETTLE) this.updateSettle(dt)
+    if (this.state === STATE.SETTLING) this.updateSettling(dt)
+    else if (this.state === STATE.WEATHER_CHANGE) this.updateWeatherChange(dt)
 
-    if (this.state !== STATE.OVER && this.state !== STATE.PLACE) {
+    if (this.state !== STATE.GAMEOVER && this.state !== STATE.PLACING) {
       this.checkCollapse()
       this.checkDanger(dt)
     }
@@ -494,4 +701,13 @@ export class Game {
     const targetY = clamp(levelY(this.topLevel) * 0.5, 1.6, 3.2)
     this.orbit.followY(targetY, dt)
   }
+}
+
+/** margin だけ縮めた上での AABB 重なり判定 */
+function aabbOverlaps(a, b, margin) {
+  return (
+    a.lowerBound.x + margin < b.upperBound.x && b.lowerBound.x + margin < a.upperBound.x &&
+    a.lowerBound.y + margin < b.upperBound.y && b.lowerBound.y + margin < a.upperBound.y &&
+    a.lowerBound.z + margin < b.upperBound.z && b.lowerBound.z + margin < a.upperBound.z
+  )
 }

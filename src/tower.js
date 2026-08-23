@@ -69,8 +69,9 @@ export function createWorld() {
   Object.assign(dc, stiff)
   world.addContactMaterial(new CANNON.ContactMaterial(woodMaterial, woodMaterial, { ...stiff, friction: 0.62 }))
   world.addContactMaterial(new CANNON.ContactMaterial(woodMaterial, groundMaterial, { ...stiff, friction: 0.8 }))
-  world.addContactMaterial(new CANNON.ContactMaterial(slipMaterial, woodMaterial, { ...stiff, friction: 0.08 }))
-  world.addContactMaterial(new CANNON.ContactMaterial(slipMaterial, groundMaterial, { ...stiff, friction: 0.2 }))
+  // 掴んでいるブロックはほぼ摩擦ゼロ。0.08 でも接触点が多いと引き抜けなくなる
+  world.addContactMaterial(new CANNON.ContactMaterial(slipMaterial, woodMaterial, { ...stiff, friction: 0.0 }))
+  world.addContactMaterial(new CANNON.ContactMaterial(slipMaterial, groundMaterial, { ...stiff, friction: 0.1 }))
 
   const ground = new CANNON.Body({ mass: 0, shape: new CANNON.Plane(), material: groundMaterial })
   ground.quaternion.setFromEuler(-Math.PI / 2, 0, 0)

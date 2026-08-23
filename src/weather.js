@@ -30,17 +30,20 @@ const FOG_COLOR = 0x39406b
 const DENSITY_CLEAR = 0.012
 const DENSITY_FOG = 0.07
 
-/** 風：1サイクル = 吹く時間 + 止む時間。止んでいる間にタワーが落ち着く */
-const GUST_BLOW = 1.4
-const GUST_CYCLE = 3.4
-/** 重力に対する横向きの力の比率。0.3 = 体重の 3 割ぶんの横風 */
-const WIND_FORCE = 4.5
-/** この高さで風の影響が最大になる */
+/* --- 風 ---------------------------------------------------------- */
+/** 1サイクル = 吹く時間 + 止む時間。止んでいる間にタワーが落ち着く */
+const GUST_BLOW = 1.8
+const GUST_CYCLE = 3.6
+/** 重力に対する横向きの力の比率。1.0 で体重ぶんの横力（＝ほぼ確実に倒れる） */
+const WIND_FORCE = 7.0
+/** この高さで風の影響が最大になる。上のブロックほど強く受ける */
 const WIND_REF_HEIGHT = 3.6
+/** 風の線の本数 */
+const STREAK_COUNT = 70
 
 const clamp01 = (v) => Math.max(0, Math.min(1, v))
 
-function makeMistTexture() {
+function makeSoftTexture() {
   const size = 256
   const c = document.createElement('canvas')
   c.width = c.height = size
@@ -67,30 +70,35 @@ export class Weather {
     this.density = DENSITY_CLEAR
     this.targetDensity = DENSITY_CLEAR
 
+    this.softTexture = makeSoftTexture()
     this.mist = []
+    this.clouds = []
     this.buildMist()
+    this.buildClouds()
+    this.buildStreaks()
 
     this.windDir = new THREE.Vector2(1, 0)
     this.windAxis = new THREE.Vector2(1, 0)
     this.gustT = 0
     this.gustIndex = -1
+    /** 0〜1。物理と見た目の両方でこの値を使う */
+    this.gustStrength = 0
   }
 
+  /* ---------------- 見た目のパーツ ---------------- */
+
   buildMist() {
-    const tex = makeMistTexture()
-    this.mistTexture = tex
     const group = new THREE.Group()
     // タワーを囲むように配置。手前側にも入るので「下の方が見づらい」感じになる
     for (let i = 0; i < 6; i++) {
       const a = (i / 6) * Math.PI * 2
-      const mat = new THREE.SpriteMaterial({
-        map: tex,
+      const s = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: this.softTexture,
         color: 0x9fb0dd,
         transparent: true,
         opacity: 0,
         depthWrite: false,
-      })
-      const s = new THREE.Sprite(mat)
+      }))
       s.scale.set(9, 3.6, 1)
       s.position.set(Math.cos(a) * 3.2, 0.5 + (i % 2) * 0.7, Math.sin(a) * 3.2)
       s.renderOrder = 5
@@ -100,6 +108,61 @@ export class Weather {
     this.mistGroup = group
     this.scene.add(group)
   }
+
+  /** 夜空を流れる雲。風のときは速く流れる */
+  buildClouds() {
+    for (let i = 0; i < 7; i++) {
+      const s = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: this.softTexture,
+        color: 0x39406e,
+        transparent: true,
+        opacity: 0.45,
+        depthWrite: false,
+        fog: false,
+      }))
+      s.scale.set(16 + Math.random() * 10, 5 + Math.random() * 3, 1)
+      s.position.set(
+        (Math.random() - 0.5) * 44,
+        5 + Math.random() * 6,
+        (Math.random() - 0.5) * 44
+      )
+      s.renderOrder = 1
+      this.scene.add(s)
+      this.clouds.push(s)
+    }
+  }
+
+  /** 風の線。画面を横切る半透明のストリーク */
+  buildStreaks() {
+    const positions = new Float32Array(STREAK_COUNT * 2 * 3)
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+    this.streakMaterial = new THREE.LineBasicMaterial({
+      color: 0xcfe0ff,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      fog: false,
+    })
+    this.streaks = new THREE.LineSegments(geo, this.streakMaterial)
+    this.streaks.frustumCulled = false
+    this.streaks.renderOrder = 10
+    this.scene.add(this.streaks)
+
+    this.streakData = []
+    for (let i = 0; i < STREAK_COUNT; i++) {
+      this.streakData.push({
+        // 風向きに沿った位置（-9〜9）と、それに直交する位置
+        along: (Math.random() - 0.5) * 18,
+        side: (Math.random() - 0.5) * 11,
+        y: 0.15 + Math.random() * 6.5,
+        len: 0.5 + Math.random() * 2.0,
+        speed: 5 + Math.random() * 9,
+      })
+    }
+  }
+
+  /* ---------------- 天候の切り替え ---------------- */
 
   /** 次のターンの天候を抽選（同じ天候の連続は避ける） */
   roll() {
@@ -119,59 +182,120 @@ export class Weather {
       // タワーが一方向に流されずに「ゆら……ゆら……」と揺れるようにする
       const a = Math.random() * Math.PI * 2
       this.windAxis.set(Math.cos(a), Math.sin(a))
+      this.windDir.copy(this.windAxis)
+    } else {
+      this.gustStrength = 0
     }
   }
 
+  /* ---------------- 毎フレームの更新 ---------------- */
+
   update(dt, tower) {
-    // --- 霧の濃さ・背景色・ミストスプライトをなめらかに補間 ---
+    this.updateFog(dt)
+    this.updateWind(dt, tower)
+    this.updateStreaks(dt)
+    this.updateClouds(dt)
+  }
+
+  updateFog(dt) {
     this.density += (this.targetDensity - this.density) * Math.min(1, dt * 1.6)
     this.scene.fog.density = this.density
 
     const k = clamp01((this.density - DENSITY_CLEAR) / (DENSITY_FOG - DENSITY_CLEAR))
     this.scene.background.copy(this.bgClear).lerp(this.bgFog, k)
     for (const s of this.mist) s.material.opacity = 0.32 * k
-
-    if (k > 0.01) {
-      this.mistGroup.rotation.y += dt * 0.04
-    }
-
-    // --- 風 ---
-    if (this.current.key === 'WIND') this.applyWind(dt, tower)
+    if (k > 0.01) this.mistGroup.rotation.y += dt * 0.04
   }
 
-  applyWind(dt, tower) {
+  updateWind(dt, tower) {
+    if (this.current.key !== 'WIND') {
+      this.gustStrength += (0 - this.gustStrength) * Math.min(1, dt * 3)
+      return
+    }
+
     this.gustT += dt
 
     const index = Math.floor(this.gustT / GUST_CYCLE)
     if (index !== this.gustIndex) {
       this.gustIndex = index
+      // 突風ごとに向きが反転する：弱い → 強い → 弱い → 逆から
       const sign = index % 2 === 0 ? 1 : -1
       this.windDir.copy(this.windAxis).multiplyScalar(sign)
     }
 
     const p = this.gustT % GUST_CYCLE
-    if (p > GUST_BLOW) return // 突風の合間。ここでタワーが落ち着く
+    // 0 → 1 → 0 のなめらかな強弱。吹いていない間は 0
+    this.gustStrength = p < GUST_BLOW ? Math.sin((p / GUST_BLOW) * Math.PI) : 0
+    if (this.gustStrength <= 0) return
 
-    // 0 → 1 → 0 のなめらかな強弱
-    const env = Math.sin((p / GUST_BLOW) * Math.PI)
     const force = new CANNON.Vec3()
-
     for (const b of tower.blocks) {
       const body = b.body
       if (body.type !== CANNON.Body.DYNAMIC) continue
       // 高いところほど強く受ける → タワーがしなるように揺れる
-      const h = 0.2 + 0.8 * clamp01(body.position.y / WIND_REF_HEIGHT)
-      const f = WIND_FORCE * env * h * body.mass
+      const h = 0.15 + 0.85 * clamp01(body.position.y / WIND_REF_HEIGHT)
+      const f = WIND_FORCE * this.gustStrength * h * body.mass
       force.set(this.windDir.x * f, 0, this.windDir.y * f)
       body.wakeUp()
       body.applyForce(force)
     }
   }
 
+  updateStreaks(dt) {
+    // 吹いていない間もうっすら流しておくと「風のターン」だと分かりやすい
+    const vis = this.current.key === 'WIND' ? 0.25 + 0.75 * this.gustStrength : 0
+    this.streakMaterial.opacity += (vis * 0.5 - this.streakMaterial.opacity) * Math.min(1, dt * 5)
+    if (this.streakMaterial.opacity < 0.005) return
+
+    const dx = this.windDir.x
+    const dz = this.windDir.y
+    // 風向きに直交する軸
+    const sx = -dz
+    const sz = dx
+
+    const arr = this.streaks.geometry.attributes.position.array
+    for (let i = 0; i < STREAK_COUNT; i++) {
+      const s = this.streakData[i]
+      s.along += s.speed * (0.35 + 0.65 * this.gustStrength) * dt
+      if (s.along > 9) {
+        s.along = -9
+        s.side = (Math.random() - 0.5) * 11
+        s.y = 0.15 + Math.random() * 6.5
+      }
+      const hx = dx * s.along + sx * s.side
+      const hz = dz * s.along + sz * s.side
+      const o = i * 6
+      arr[o] = hx
+      arr[o + 1] = s.y
+      arr[o + 2] = hz
+      arr[o + 3] = hx - dx * s.len
+      arr[o + 4] = s.y
+      arr[o + 5] = hz - dz * s.len
+    }
+    this.streaks.geometry.attributes.position.needsUpdate = true
+  }
+
+  updateClouds(dt) {
+    const boost = this.current.key === 'WIND' ? 1 + 6 * this.gustStrength : 1
+    const vx = this.windDir.x * 0.25 * boost
+    const vz = this.windDir.y * 0.25 * boost
+    for (const c of this.clouds) {
+      c.position.x += vx * dt
+      c.position.z += vz * dt
+      if (Math.abs(c.position.x) > 30) c.position.x = -Math.sign(c.position.x) * 30
+      if (Math.abs(c.position.z) > 30) c.position.z = -Math.sign(c.position.z) * 30
+    }
+  }
+
   dispose() {
     this.scene.remove(this.mistGroup)
     for (const s of this.mist) s.material.dispose()
-    this.mistTexture.dispose()
+    for (const c of this.clouds) { this.scene.remove(c); c.material.dispose() }
+    this.scene.remove(this.streaks)
+    this.streaks.geometry.dispose()
+    this.streakMaterial.dispose()
+    this.softTexture.dispose()
     this.mist = []
+    this.clouds = []
   }
 }
