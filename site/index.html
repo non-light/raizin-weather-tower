@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PLAY — らいとすぴりっつ</title>
+<style>
+  :root { --bg:#070b1e; --accent:#ffd23f; --accent-dim:#b7912a; --text:#eef2ff; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; padding: 48px 24px;
+    background: radial-gradient(circle at 50% 0%, #101638, #03050f 70%);
+    color: var(--text);
+    font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", system-ui, sans-serif;
+    display: flex; flex-direction: column; align-items: center;
+  }
+  header { text-align: center; margin-bottom: 44px; }
+  h1 {
+    margin: 0; font-size: 44px; font-weight: 900; letter-spacing: 10px;
+    color: var(--accent); text-shadow: 0 0 34px rgba(255,210,63,.4);
+  }
+  .sub { margin-top: 10px; font-size: 14px; letter-spacing: 4px; color: rgba(238,242,255,.55); }
+  .games { display: grid; gap: 20px; width: 100%; max-width: 760px; }
+  .card {
+    display: flex; gap: 20px; align-items: center;
+    padding: 22px; border-radius: 18px; text-decoration: none; color: inherit;
+    background: rgba(12,17,42,.9); border: 2px solid rgba(255,210,63,.3);
+    transition: transform .15s ease, border-color .15s ease, box-shadow .15s ease;
+  }
+  .card:hover {
+    transform: translateY(-4px); border-color: var(--accent);
+    box-shadow: 0 0 34px rgba(255,210,63,.28);
+  }
+  .thumb {
+    width: 96px; height: 96px; flex: 0 0 96px; border-radius: 14px;
+    display: flex; align-items: center; justify-content: center;
+    background: linear-gradient(160deg,#2a2f5c,#0d1130);
+    border: 2px solid rgba(255,210,63,.35);
+    font-size: 34px; font-weight: 900; color: var(--accent);
+  }
+  .body h2 { margin: 0 0 6px; font-size: 22px; font-weight: 900; letter-spacing: 1px; }
+  .body p { margin: 0; font-size: 14px; line-height: 1.6; color: rgba(238,242,255,.72); }
+  .tag {
+    display: inline-block; margin-top: 10px; padding: 3px 12px; border-radius: 999px;
+    background: rgba(255,210,63,.15); border: 1px solid var(--accent-dim);
+    font-size: 11px; font-weight: 800; letter-spacing: 2px; color: var(--accent);
+  }
+  footer { margin-top: 56px; font-size: 12px; color: rgba(238,242,255,.35); }
+  footer a { color: rgba(238,242,255,.55); }
+  @media (max-width: 520px) {
+    h1 { font-size: 30px; letter-spacing: 6px; }
+    .card { flex-direction: column; text-align: center; }
+  }
+</style>
+</head>
+<body>
+  <header>
+    <h1>PLAY</h1>
+    <div class="sub">らいとすぴりっつ</div>
+  </header>
+
+  <main class="games">
+    <a class="card" href="/raizin-tower/">
+      <div class="thumb">雷</div>
+      <div class="body">
+        <h2>RAIZIN WEATHER TOWER</h2>
+        <p>雷神マスコットと遊ぶ、天候つきのジェンガ風3Dタワーゲーム。ルーレットで当たった色のブロックだけを抜いて、崩さずに積み上げよう。50種類の称号を集められます。</p>
+        <span class="tag">PROTOTYPE</span>
+      </div>
+    </a>
+  </main>
+
+  <footer>
+    <a href="https://lightspirits.jp/">lightspirits.jp</a>
+  </footer>
+</body>
+</html>

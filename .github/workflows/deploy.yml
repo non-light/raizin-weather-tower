@@ -25,6 +25,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      # サイトのルート（トップページと CNAME）を dist へ置く。
+      # ゲーム本体は vite が dist/raizin-tower/ に出力している
+      - run: cp site/index.html site/CNAME dist/
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
