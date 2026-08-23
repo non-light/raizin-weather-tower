@@ -87,11 +87,12 @@ export function createWorld() {
  * 無限大になってタワーが暴れるので、あくまで動的ボディのまま速度で動かす。
  * 回転だけロックして、引き抜き中に転がらないようにする。
  */
-export function setGrabbed(body) {
+export function setGrabbed(body, { allowRotation = false } = {}) {
   body.material = slipMaterial
   body.type = CANNON.Body.DYNAMIC
   body.mass = MASS
-  body.fixedRotation = true
+  // 横抜きのときだけ、少し傾けるように回転ロックを外す
+  body.fixedRotation = !allowRotation
   body.updateMassProperties()
   body.allowSleep = false
   body.angularVelocity.setZero()

@@ -59,6 +59,33 @@ const MAX_SIDE_PULL = BLOCK.wid * 2.8
 const MIN_SIDE_DISTANCE = BLOCK.wid * 1.5
 /** ドラッグ開始からこれだけ動いたところで、縦抜き／横抜きを決める */
 const AXIS_DECIDE_PX = 12
+
+/* ------------------------------------------------------------------
+ * 横抜きの手応え。バランス調整はここだけ触ればよい。
+ * 横抜きが「安全で簡単な抜け道」にならないよう、重さと引っかかりを作る。
+ * ------------------------------------------------------------------ */
+export const SIDE_PULL = {
+  /** 動き出すまでの抵抗（静止摩擦）。大きいほど最初が重い */
+  STATIC_FRICTION: 1.6,
+  /** 動き出したあとの抵抗（動摩擦） */
+  DYNAMIC_FRICTION: 0.7,
+  /** マウス移動 → ブロック移動の比率。1.0 にすると 1:1 で軽くなりすぎる */
+  DRAG_SCALE: 0.6,
+  /** 周囲のブロックへ伝える横向きの力 */
+  SHAKE_FORCE: 6.0,
+  /** 速く引いたときに、揺れがどれだけ増えるか */
+  SPEED_MULTIPLIER: 2.6,
+  /** 上に載っている重さで、どれだけ重くなるか */
+  LOAD_MULTIPLIER: 1.8,
+  /** 静止摩擦を振り切るまでの時間（秒）。荷重に比例して伸びる */
+  BREAKAWAY_TIME: 0.3,
+  /** 引っかかりの強弱の振れ幅（0 で一定） */
+  GRIP_WAVE: 0.45,
+  /** 横抜き中に許す傾きの大きさ（ラジアン） */
+  TILT: 0.1,
+  /** 揺れを伝える段数（対象ブロックから上下いくつまで） */
+  SHAKE_LEVELS: 5,
+}
 /** 重なり判定に使うすき間。これだけ離れていれば重なっていないとみなす */
 const CLEAR_MARGIN = 0.02
 
@@ -548,7 +575,9 @@ export class Game {
       }
 
       // 決まった1軸だけに動きを制限する
-      const along = (dx * this.axis2.x + dy * this.axis2.y) / this.axis2.pxPerUnit
+      let along = (dx * this.axis2.x + dy * this.axis2.y) / this.axis2.pxPerUnit
+      // 横抜きはマウスの動きをそのまま反映せず、少し遅れてついてくるようにする
+      if (this.pullAxis === 'SIDE') along *= SIDE_PULL.DRAG_SCALE
       const [lo, hi] = this.pullRange()
       this.pullTarget = clamp(this.pullTarget + along, lo, hi)
       this.canceling = false
@@ -655,6 +684,62 @@ export class Game {
     }
     this.axisLocked = true
     this.hidePullGuide()
+
+    if (this.pullAxis === 'SIDE') {
+      this.sideBrokeAway = false
+      this.sideGripT = 0
+      // 引っかかりの出方をブロックごとに変える（毎回同じ場所で引っかからないように）
+      this.gripPhase = (this.selected.level * 2.7 + this.selected.slot * 1.3) % (Math.PI * 2)
+      // 少しだけ傾けるようにする
+      setGrabbed(this.selected.body, { allowRotation: true })
+    }
+  }
+
+  /**
+   * そのブロックの上にどれだけ載っているか。
+   * 下段ほど重く、上段ほど軽くなる
+   */
+  sideLoad(block) {
+    const above = this.tower.blocks.filter((b) => b.level > block.level).length
+    return 1 + SIDE_PULL.LOAD_MULTIPLIER * (above / this.tower.blocks.length)
+  }
+
+  /**
+   * 横抜き中、周囲のブロックへ横向きの力を伝える。
+   * 速く引くほど大きく揺れるので、勢いで引き抜く攻略にはならない。
+   */
+  transmitSideShake(dt, speed) {
+    const block = this.selected
+    const dir = this.pullDir
+    // 力は「実際に滑っている速さ」に比例させる。
+    // 引っかかっている間だけは、強く引くと少しだけ持っていかれる（ぐっと来る感じ）。
+    // 一定の力をかけ続けるとタワーが加速し続けて吹き飛ぶので、そうはしない
+    const fast = clamp(Math.abs(speed) / 1.2, 0, 1)
+    // 「どれだけ強く引こうとしているか」＝マウスに対する遅れ。
+    // 勢いよく引くほど大きくなるので、雑に引くとタワーが持っていかれる
+    const effort = clamp(Math.abs(this.pullTarget - this.pull) / 0.4, 0, 1)
+      * (this.sideBrokeAway ? 0.75 : 0.35)
+    const drive = Math.min(1, Math.max(fast, effort))
+    const mag = SIDE_PULL.SHAKE_FORCE * (0.15 + SIDE_PULL.SPEED_MULTIPLIER * drive)
+    if (mag <= 0) return
+
+    const force = new CANNON.Vec3()
+    for (const b of this.tower.blocks) {
+      if (b === block) continue
+      if (b.body.type !== CANNON.Body.DYNAMIC) continue
+      const dl = b.level - block.level
+      if (dl < 0) continue
+
+      // 引きずられるのは、そのブロックと上に載っているぶん。
+      // 接している段がいちばん強く、上へ行くほど弱まるが、
+      // 高い位置ほどテコが効くので、タワー全体がゆらりと傾く
+      const near = 1 / (1 + dl * 0.55)
+      const lever = 0.35 + 0.65 * clamp(dl / SIDE_PULL.SHAKE_LEVELS, 0, 1)
+      const f = mag * near * lever * b.body.mass
+      force.set(dir.x * f, 0, dir.z * f)
+      b.body.wakeUp()
+      b.body.applyForce(force)
+    }
   }
 
   /** その軸で引き抜ける範囲 */
@@ -700,6 +785,9 @@ export class Game {
     this.axisLocked = false
     this.decideDx = 0
     this.decideDy = 0
+    this.sideBrokeAway = false
+    this.sideGripT = 0
+    this.gripPhase = 0
 
     this.showPullGuide(block)
 
@@ -848,7 +936,33 @@ export class Game {
     }
 
     // 目標値へなめらかに追従させる（急激な移動で物理が壊れるのを防ぐ）
-    this.pull += (this.pullTarget - this.pull) * Math.min(1, dt * 6)
+    let rate = dt * 6
+    const isSide = this.pullAxis === 'SIDE' && !this.canceling
+
+    if (isSide) {
+      const load = this.sideLoad(block)
+      // 動き出す前は静止摩擦、動き出したあとは動摩擦
+      const grip = this.sideBrokeAway ? SIDE_PULL.DYNAMIC_FRICTION : SIDE_PULL.STATIC_FRICTION
+      // 接触の具合で抵抗が少し波打つ（スー…、少し重い、また動く）
+      const wave = 1 + SIDE_PULL.GRIP_WAVE * Math.sin(this.pull * 9 + this.gripPhase)
+      // 端まで来ると軽くなる
+      const nearOut = clamp(Math.abs(this.pull) / MAX_SIDE_PULL, 0, 1)
+      rate = (dt * 6) / (1 + grip * load * wave * (1 - 0.55 * nearOut))
+
+      if (!this.sideBrokeAway) {
+        // 力がたまるまでは、ほとんど動かない
+        const demand = Math.abs(this.pullTarget - this.pull)
+        if (demand > 0.03) this.sideGripT += dt
+        else this.sideGripT = Math.max(0, this.sideGripT - dt * 2)
+
+        if (this.sideGripT >= SIDE_PULL.BREAKAWAY_TIME * load) this.sideBrokeAway = true
+        else rate *= 0.12
+      }
+    }
+
+    const prevPull = this.pull
+    this.pull += (this.pullTarget - this.pull) * Math.min(1, rate)
+    if (isSide) this.transmitSideShake(dt, (this.pull - prevPull) / dt)
 
     const d = this.pullDir
     const tx = this.origPos.x + d.x * this.pull
@@ -860,8 +974,22 @@ export class Game {
     const sp = body.velocity.length()
     if (sp > MAX_GRAB_SPEED) body.velocity.scale(MAX_GRAB_SPEED / sp, body.velocity)
 
-    body.angularVelocity.setZero()
-    body.quaternion.copy(this.origQuat)
+    if (isSide) {
+      // ほんの少しだけ傾くのを許す。当たるとカクッと傾いて緊張感が出る
+      const q = body.quaternion
+      const o = this.origQuat
+      const dot = Math.abs(q.x * o.x + q.y * o.y + q.z * o.z + q.w * o.w)
+      const angle = 2 * Math.acos(Math.min(1, dot))
+      if (angle > SIDE_PULL.TILT) {
+        const fix = new CANNON.Quaternion()
+        q.slerp(o, 1 - SIDE_PULL.TILT / angle, fix)
+        body.quaternion.copy(fix)
+      }
+      body.angularVelocity.scale(0.6, body.angularVelocity)
+    } else {
+      body.angularVelocity.setZero()
+      body.quaternion.copy(this.origQuat)
+    }
 
     if (this.canceling && Math.abs(this.pull) < 0.02) {
       // 元に戻しきったので手を離す
