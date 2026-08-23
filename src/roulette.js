@@ -17,8 +17,9 @@ const rad = (deg) => (deg * Math.PI) / 180
  * （requestAnimationFrame に依存しないので、コマ送り検証もできる）。
  */
 export class Roulette {
-  constructor(onResult) {
+  constructor(onResult, onSpin) {
     this.onResult = onResult
+    this.onSpin = onSpin
     this.root = document.getElementById('roulette')
     this.canvas = document.getElementById('rl-canvas')
     this.ctx = this.canvas.getContext('2d')
@@ -77,6 +78,7 @@ export class Roulette {
     this.spinBtn.disabled = true
     this.spinBtn.textContent = '...'
     this.resultEl.textContent = ''
+    if (this.onSpin) this.onSpin()
 
     // 先に結果を決めて、その扇の中心が真上に来る角度で止める
     this.resultIndex = this.pickIndex()

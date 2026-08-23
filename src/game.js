@@ -96,7 +96,10 @@ export class Game {
     this.tower = null
     this.weather = null
     this.markers = []
-    this.roulette = new Roulette((slot) => this.onRouletteResult(slot))
+    this.roulette = new Roulette(
+      (slot) => this.onRouletteResult(slot),
+      () => this.ui.say('何色かな…わくわく', 2200)
+    )
     this.book = new Book(() => this.closeBook())
 
     this.bindEvents()
@@ -493,7 +496,8 @@ export class Game {
       this.lastY = e.clientY
       // マウス移動量をブロックの長手方向（画面上のベクトル）へ射影する
       const along = (dx * this.axis2.x + dy * this.axis2.y) / this.axis2.pxPerUnit
-      this.pullTarget = clamp(this.pullTarget + along, 0, MAX_PULL)
+      // 長手方向の1軸だけに制限しつつ、両側へ動かせるようにする
+      this.pullTarget = clamp(this.pullTarget + along, -MAX_PULL, MAX_PULL)
       this.canceling = false
       return
     }
@@ -532,13 +536,14 @@ export class Game {
     this.renderer.domElement.classList.remove('grabbing')
 
     // 中途半端なところで手を離したら、まだ抜けていないことを伝える
-    if (this.state === STATE.PULLING && this.pullNagCooldown <= 0 && this.actualPull() > 0.25) {
+    if (this.state === STATE.PULLING && this.pullNagCooldown <= 0 && Math.abs(this.actualPull()) > 0.25) {
       this.ui.say('もうちょっとかな…', 2200)
       this.pullNagCooldown = 3.0
     }
   }
 
   beginDrag(e) {
+    this.hidePullGuide()
     this.dragging = true
     this.lastX = e.clientX
     this.lastY = e.clientY
@@ -550,6 +555,8 @@ export class Game {
    * ドラッグ量(px) → 引き抜き量(world) の変換に使う。
    */
   computeScreenAxis() {
+    // カメラを動かした直後だと行列が古いままのことがあるので、投影前に更新しておく
+    this.camera.updateMatrixWorld()
     const o = this.origPos
     const d = this.pullDir
     const p0 = new THREE.Vector3(o.x, o.y, o.z).project(this.camera)
@@ -593,15 +600,12 @@ export class Game {
     this.origPos = block.body.position.clone()
     this.origQuat = block.body.quaternion.clone()
 
-    // 長手方向（ローカル +X）をワールドへ。カメラに近づく向きを「手前」とする
-    const local = new CANNON.Vec3(1, 0, 0)
-    const world = block.body.quaternion.vmult(local)
-    const dir = new THREE.Vector3(world.x, world.y, world.z).normalize()
-    const toCam = new THREE.Vector3()
-      .copy(this.camera.position)
-      .sub(block.mesh.position)
-    if (dir.dot(toCam) < 0) dir.multiplyScalar(-1)
-    this.pullDir = dir
+    // そのブロック自身の長手方向（ローカル +X）をワールドへ。
+    // 向きは固定せず、この軸の「両側」へ引き抜けるようにする
+    // （this.pull が正なら +方向、負なら −方向）
+    const world = block.body.quaternion.vmult(new CANNON.Vec3(1, 0, 0))
+    this.pullDir = new THREE.Vector3(world.x, world.y, world.z).normalize()
+    this.showPullGuide(block)
 
     setGrabbed(block.body)
     this.tower.wakeAll()
@@ -611,6 +615,7 @@ export class Game {
   }
 
   deselect() {
+    this.hidePullGuide()
     if (this.hovered && this.hovered !== this.selected) this.hovered.outline.visible = false
     this.hovered = null
     if (this.selected) {
@@ -621,6 +626,38 @@ export class Game {
   }
 
   /** 引き抜き方向に、実際にどれだけ動いたか（物理の結果を見る） */
+  /**
+   * 「この方向に抜けるよ」の矢印。ブロックの両端に小さく出す。
+   * ブロックの向きに合わせて回るので、縦向きの段でも正しい向きになる。
+   */
+  showPullGuide(block) {
+    if (!this.pullGuide) {
+      const mat = new THREE.MeshBasicMaterial({
+        color: 0xffd23f, transparent: true, opacity: 0.75, depthTest: false,
+      })
+      const geo = new THREE.ConeGeometry(0.085, 0.22, 12)
+      const group = new THREE.Group()
+      const plus = new THREE.Mesh(geo, mat)
+      plus.position.set(BLOCK.len / 2 + 0.2, 0, 0)
+      plus.rotation.z = -Math.PI / 2
+      const minus = new THREE.Mesh(geo, mat)
+      minus.position.set(-(BLOCK.len / 2 + 0.2), 0, 0)
+      minus.rotation.z = Math.PI / 2
+      group.add(plus, minus)
+      group.renderOrder = 997
+      this.pullGuide = group
+      this.scene.add(group)
+    }
+    this.pullGuide.position.copy(block.mesh.position)
+    this.pullGuide.quaternion.copy(block.mesh.quaternion)
+    this.pullGuide.visible = true
+  }
+
+  hidePullGuide() {
+    if (this.pullGuide) this.pullGuide.visible = false
+  }
+
+  /** 引き抜き方向に実際どれだけ動いたか（符号つき。どちら側へ抜いても絶対値で見る） */
   actualPull() {
     if (!this.selected) return 0
     const p = this.selected.body.position
@@ -636,7 +673,7 @@ export class Game {
    */
   isFullyPulled() {
     if (!this.selected) return false
-    if (this.actualPull() < MIN_PULL_DISTANCE) return false
+    if (Math.abs(this.actualPull()) < MIN_PULL_DISTANCE) return false
 
     const me = this.selected.body
     me.updateAABB()
@@ -660,16 +697,17 @@ export class Game {
       this.exitPlacement()
       const body = this.selected.body
       // 空中に浮いているので、いったん引き抜き軸の上へ戻してから押し込む
+      const back = this.extractedPull || MAX_PULL
       body.position.set(
-        this.origPos.x + this.pullDir.x * MAX_PULL,
-        this.origPos.y + this.pullDir.y * MAX_PULL,
-        this.origPos.z + this.pullDir.z * MAX_PULL
+        this.origPos.x + this.pullDir.x * back,
+        this.origPos.y + this.pullDir.y * back,
+        this.origPos.z + this.pullDir.z * back
       )
       body.quaternion.copy(this.origQuat)
       setGrabbed(body)
       body.collisionResponse = true
 
-      this.pull = MAX_PULL
+      this.pull = this.extractedPull || MAX_PULL
       this.pullTarget = 0
       // canceling を立てておかないと、抜けきった状態なので即座に配置モードへ戻ってしまう
       this.canceling = true
@@ -685,7 +723,7 @@ export class Game {
     this.pullNagCooldown -= dt
 
     // 引き抜きはじめに一度だけ声をかける
-    if (!this.saidPulling && !this.canceling && this.actualPull() > 0.35) {
+    if (!this.saidPulling && !this.canceling && Math.abs(this.actualPull()) > 0.35) {
       this.saidPulling = true
       this.ui.say('そーっと…そーっと…', 2000)
     }
@@ -706,7 +744,7 @@ export class Game {
     body.angularVelocity.setZero()
     body.quaternion.copy(this.origQuat)
 
-    if (this.canceling && this.pull < 0.02) {
+    if (this.canceling && Math.abs(this.pull) < 0.02) {
       // 元に戻しきったので手を離す
       body.position.copy(this.origPos)
       body.quaternion.copy(this.origQuat)
@@ -731,6 +769,9 @@ export class Game {
   enterPlacement() {
     const block = this.selected
     const body = block.body
+    // どちら側へ抜いたかを覚えておく（配置をやめたときに同じ側から戻すため）
+    this.extractedPull = this.pull
+    this.hidePullGuide()
 
     setKinematic(body)
     body.collisionResponse = false

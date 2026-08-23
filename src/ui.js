@@ -3,6 +3,9 @@ import raizinUrl from '../assets/raizin.png'
 import { COLORS } from './colors.js'
 
 /** 成功したときに雷神が言うセリフ */
+/** 吹き出しの最低表示時間。これより短い指定でも必ずこれだけは出す */
+const MIN_BUBBLE_MS = 1800
+
 export const SUCCESS_LINES = [
   'いい感じ！',
   'やった〜！',
@@ -230,8 +233,9 @@ export class UI {
     this.prompt.classList.toggle('show', !!text)
   }
 
-  /** 雷神のふきだし */
+  /** 雷神のふきだし。短いセリフでも読めるよう最低表示時間を確保する */
   say(text, ms = 2600) {
+    ms = Math.max(ms, MIN_BUBBLE_MS)
     clearTimeout(this._bubbleTimer)
     clearTimeout(this._seqTimer)
     this.bubbleText.textContent = text
@@ -241,6 +245,7 @@ export class UI {
 
   /** 続けて何回かしゃべる（「お、雷神だ！」→「好きな色、えらんでいいよ〜」など） */
   saySequence(lines, hold = 1800) {
+    hold = Math.max(hold, MIN_BUBBLE_MS)
     clearTimeout(this._bubbleTimer)
     clearTimeout(this._seqTimer)
     const step = (i) => {

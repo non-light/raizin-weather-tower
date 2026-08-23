@@ -32,6 +32,24 @@ html, body {
   z-index: 10;
 }
 
+/* ------------------------------------------------------------------
+ * 重なり順（大きいほど手前）
+ *   3D画面 < 天候・特殊演出 < ルーレット < 中央の結果表示
+ *   < 通常UI < 雷神マスコットと吹き出し < 全画面（タイトル/図鑑/GAME OVER）
+ * 雷神は案内役なので、演出に埋もれないよう常にそれらより手前に置く
+ * ------------------------------------------------------------------ */
+#fx            { z-index: 2; }
+#roulette      { z-index: 5; }
+#weather-flash { z-index: 6; }
+#special-flash { z-index: 6; }
+#prompt        { z-index: 6; }
+#color-choice  { z-index: 7; }
+#score, #status, #title-tag, #hint { z-index: 8; }
+#mascot        { z-index: 12; }
+#title-screen  { z-index: 20; }
+#book          { z-index: 21; }
+#gameover      { z-index: 22; }
+
 /* ---------- score ---------- */
 #score {
   position: absolute;
@@ -178,6 +196,7 @@ html, body {
 
 #bubble {
   position: relative;
+  z-index: 2;
   max-width: 210px;
   margin-bottom: 10px;
   padding: 12px 16px;
@@ -253,7 +272,6 @@ html, body {
   /* 本編より落ち着いた、静かな暗さ */
   background: radial-gradient(circle at 50% 45%, rgba(9, 13, 34, 0.95), rgba(3, 5, 16, 0.99));
   pointer-events: auto;
-  z-index: 6;
   opacity: 1;
   transition: opacity 0.55s ease;
 }
@@ -373,7 +391,6 @@ body.title-mode #mascot { display: none; }
   opacity: 0;
   transition: opacity 0.2s ease, transform 0.32s cubic-bezier(0.2, 1.6, 0.4, 1);
   white-space: nowrap;
-  z-index: 3;
 }
 #special-flash.show { opacity: 1; transform: translate(-50%, -50%) scale(1); }
 #sf-main { font-size: 62px; font-weight: 900; letter-spacing: 4px; line-height: 1.1; }
@@ -411,7 +428,7 @@ body.title-mode #mascot { display: none; }
 #special-flash[data-kind="DANGER"] #sf-sub { color: #ffb0b0; }
 
 /* 画面全体のフラッシュ */
-#fx { position: absolute; inset: 0; pointer-events: none; z-index: 2; }
+#fx { position: absolute; inset: 0; pointer-events: none; }
 #fx-flash { position: absolute; inset: 0; opacity: 0; }
 #fx-flash.raizin {
   background: radial-gradient(circle at 50% 40%, rgba(255,246,190,.95), rgba(255,210,63,.35) 45%, transparent 70%);
@@ -476,7 +493,6 @@ body.title-mode #mascot { display: none; }
   background: rgba(4, 6, 20, 0.6);
   backdrop-filter: blur(2px);
   pointer-events: auto;
-  z-index: 4;
 }
 #color-choice.show { display: flex; }
 .cc-panel {
@@ -745,7 +761,6 @@ body.title-mode #mascot { display: none; }
   flex-direction: column;
   background: radial-gradient(circle at 50% 0%, rgba(16, 22, 56, 0.98), rgba(3, 5, 16, 0.99));
   pointer-events: auto;
-  z-index: 7;
   padding: 22px 26px 0;
 }
 #book.show { display: flex; }
@@ -924,4 +939,31 @@ body.title-mode #mascot { display: none; }
 @media (max-width: 640px) {
   #book-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
   #book-mascot { display: none; }
+}
+
+
+/* ------------------------------------------------------------------
+ * 画面が狭いときは、ルーレットを小さくして雷神と重ならないようにする
+ * ------------------------------------------------------------------ */
+@media (max-width: 900px) {
+  /* 雷神のスペースを空けるため、ルーレットと雷神の両方を少し小さくする */
+  #mascot { width: 154px; }
+  #mascot-art { width: 132px; height: 132px; }
+  #bubble { max-width: 154px; font-size: 13px; padding: 9px 12px; }
+  .rl-panel { padding: 16px 22px 20px; }
+  #rl-wheel { width: 240px; height: 240px; }
+  #rl-canvas { width: 240px; height: 240px; }
+  #rl-spin { width: 84px; height: 84px; font-size: 19px; }
+  #rl-result { font-size: 21px; min-height: 28px; }
+  #rl-title { font-size: 17px; margin-bottom: 10px; }
+}
+
+@media (max-width: 700px) {
+  #mascot { width: 128px; }
+  #mascot-art { width: 108px; height: 108px; }
+  #bubble { max-width: 132px; font-size: 12px; }
+  #rl-wheel { width: 200px; height: 200px; }
+  #rl-canvas { width: 200px; height: 200px; }
+  #rl-spin { width: 72px; height: 72px; font-size: 16px; }
+  #weather-flash-main, #sf-main { font-size: 44px; }
 }
