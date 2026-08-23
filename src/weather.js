@@ -37,8 +37,6 @@ const WEATHER_POOL = [
   { w: WEATHERS.STORM, weight: 1.4 },
 ]
 
-/** 嵐のときの倍率（風は強め、霧はうっすら） */
-const STORM_WIND_MULT = 1.35
 const STORM_FOG_DENSITY = 0.055
 
 /* ------------------------------------------------------------------
@@ -76,12 +74,37 @@ const FOG_COLOR = 0x5a648f
 const DENSITY_CLEAR = FOG.DENSITY_CLEAR
 const DENSITY_FOG = FOG.DENSITY
 
-/* --- 風 ---------------------------------------------------------- */
-/** 1サイクル = 吹く時間 + 止む時間。止んでいる間にタワーが落ち着く */
-const GUST_BLOW = 1.8
-const GUST_CYCLE = 3.6
-/** 重力に対する横向きの力の比率。1.0 で体重ぶんの横力（＝ほぼ確実に倒れる） */
-const WIND_FORCE = 7.0
+/* ------------------------------------------------------------------
+ * 風と嵐の強さ。どちらか一方だけ調整できるように完全に分けてある。
+ *   WIND  … 揺れるけれど、基本的には持ちこたえる
+ *   STORM … 本当に危険。操作していなくても倒れることがある
+ * 数字は「重力に対する横向きの力の比率 × 質量」。
+ * 9.82 で体重ぶんの横力（＝ほぼ確実に倒れる）
+ * ------------------------------------------------------------------ */
+export const WEATHER_TUNING = {
+  // --- 通常の風 ---
+  WIND_FORCE_MIN: 2.0,
+  WIND_FORCE_MAX: 5.2,
+  /** 吹いている時間（秒） */
+  WIND_BLOW_DURATION: 1.6,
+  /** 吹かずに休む時間（秒）。ここでタワーが落ち着くので必ず作る */
+  WIND_REST_DURATION: 2.3,
+  /** たまに入る強めの突風の確率 */
+  WIND_GUST_CHANCE: 0.25,
+  WIND_GUST_MULT: 1.3,
+
+  // --- 嵐 ---
+  STORM_FORCE_MIN: 3.2,
+  STORM_FORCE_MAX: 9.0,
+  STORM_BLOW_DURATION: 2.3,
+  STORM_REST_DURATION: 0.9,
+  STORM_GUST_CHANCE: 0.6,
+  STORM_GUST_MULT: 1.7,
+  /** 雷による小さな衝撃の確率（1サイクルあたり）と強さ */
+  STORM_SHOCK_CHANCE: 0.45,
+  STORM_SHOCK_FORCE: 7.0,
+}
+
 /** この高さで風の影響が最大になる。上のブロックほど強く受ける */
 const WIND_REF_HEIGHT = 3.6
 /** 風の線の本数 */
@@ -130,6 +153,8 @@ export class Weather {
     this.windAxis = new THREE.Vector2(1, 0)
     this.gustT = 0
     this.gustIndex = -1
+    this.cycleForce = 0
+    this.pendingShock = -1
     /** 0〜1。物理と見た目の両方でこの値を使う */
     this.gustStrength = 0
   }
@@ -262,9 +287,22 @@ export class Weather {
     return this.current.key === 'WIND' || this.current.key === 'STORM'
   }
 
-  /** 嵐は風が強い */
-  get windMultiplier() {
-    return this.current.key === 'STORM' ? STORM_WIND_MULT : 1
+  /** いまの天候の風設定 */
+  get windTuning() {
+    const T = WEATHER_TUNING
+    return this.current.key === 'STORM'
+      ? {
+        min: T.STORM_FORCE_MIN, max: T.STORM_FORCE_MAX,
+        blow: T.STORM_BLOW_DURATION, rest: T.STORM_REST_DURATION,
+        gustChance: T.STORM_GUST_CHANCE, gustMult: T.STORM_GUST_MULT,
+        shockChance: T.STORM_SHOCK_CHANCE, shockForce: T.STORM_SHOCK_FORCE,
+      }
+      : {
+        min: T.WIND_FORCE_MIN, max: T.WIND_FORCE_MAX,
+        blow: T.WIND_BLOW_DURATION, rest: T.WIND_REST_DURATION,
+        gustChance: T.WIND_GUST_CHANCE, gustMult: T.WIND_GUST_MULT,
+        shockChance: 0, shockForce: 0,
+      }
   }
 
   set(weather, instant = false) {
@@ -279,6 +317,8 @@ export class Weather {
     if (this.windActive) {
       this.gustT = 0
       this.gustIndex = -1
+      this.cycleForce = 0
+      this.pendingShock = -1
       // 風向きの軸はターンごとにランダム。突風は左右交互に吹かせて、
       // タワーが一方向に流されずに「ゆら……ゆら……」と揺れるようにする
       const a = Math.random() * Math.PI * 2
@@ -349,19 +389,34 @@ export class Weather {
       return
     }
 
+    const T = this.windTuning
+    const cycle = T.blow + T.rest
     this.gustT += dt
 
-    const index = Math.floor(this.gustT / GUST_CYCLE)
+    const index = Math.floor(this.gustT / cycle)
     if (index !== this.gustIndex) {
       this.gustIndex = index
-      // 突風ごとに向きが反転する：弱い → 強い → 弱い → 逆から
+      // 突風ごとに向きが反転する：弱い → 強い → 弱い → 逆から → 休む
       const sign = index % 2 === 0 ? 1 : -1
       this.windDir.copy(this.windAxis).multiplyScalar(sign)
+      // このサイクルの強さを決める。たまに強めの突風が入る
+      const gust = Math.random() < T.gustChance
+      const base = T.min + (T.max - T.min) * Math.random()
+      this.cycleForce = Math.min(T.max, gust ? base * T.gustMult : base)
+      // 嵐では雷の衝撃が入ることがある
+      this.pendingShock = Math.random() < T.shockChance ? T.blow * 0.45 : -1
     }
 
-    const p = this.gustT % GUST_CYCLE
-    // 0 → 1 → 0 のなめらかな強弱。吹いていない間は 0
-    this.gustStrength = p < GUST_BLOW ? Math.sin((p / GUST_BLOW) * Math.PI) : 0
+    const p = this.gustT % cycle
+    // 吹いている間だけ 0 → 1 → 0 のなめらかな強弱。休みの間は完全に 0
+    this.gustStrength = p < T.blow ? Math.sin((p / T.blow) * Math.PI) : 0
+
+    // 雷の衝撃（嵐のみ）。一瞬だけ横向きに小突く
+    if (this.pendingShock >= 0 && p >= this.pendingShock) {
+      this.pendingShock = -1
+      this.applyShock(tower, T.shockForce)
+    }
+
     if (this.gustStrength <= 0) return
 
     const force = new CANNON.Vec3()
@@ -370,10 +425,27 @@ export class Weather {
       if (body.type !== CANNON.Body.DYNAMIC) continue
       // 高いところほど強く受ける → タワーがしなるように揺れる
       const h = 0.15 + 0.85 * clamp01(body.position.y / WIND_REF_HEIGHT)
-      const f = WIND_FORCE * this.windMultiplier * this.gustStrength * h * body.mass
+      const f = this.cycleForce * this.gustStrength * h * body.mass
       force.set(this.windDir.x * f, 0, this.windDir.y * f)
       body.wakeUp()
       body.applyForce(force)
+    }
+  }
+
+  /** 雷の衝撃。一瞬の力積なので、持続的な風とは別扱い */
+  applyShock(tower, strength) {
+    const a = Math.random() * Math.PI * 2
+    const dx = Math.cos(a)
+    const dz = Math.sin(a)
+    const impulse = new CANNON.Vec3()
+    for (const b of tower.blocks) {
+      const body = b.body
+      if (body.type !== CANNON.Body.DYNAMIC) continue
+      const h = 0.2 + 0.8 * clamp01(body.position.y / WIND_REF_HEIGHT)
+      const f = strength * h * body.mass * 0.02
+      impulse.set(dx * f, 0, dz * f)
+      body.wakeUp()
+      body.applyImpulse(impulse)
     }
   }
 

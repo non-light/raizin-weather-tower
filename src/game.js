@@ -66,11 +66,25 @@ const AXIS_DECIDE_PX = 12
  * ------------------------------------------------------------------ */
 export const SIDE_PULL = {
   /** 動き出すまでの抵抗（静止摩擦）。大きいほど最初が重い */
-  STATIC_FRICTION: 1.6,
+  STATIC_FRICTION: 2.4,
   /** 動き出したあとの抵抗（動摩擦） */
-  DYNAMIC_FRICTION: 0.7,
-  /** マウス移動 → ブロック移動の比率。1.0 にすると 1:1 で軽くなりすぎる */
-  DRAG_SCALE: 0.6,
+  DYNAMIC_FRICTION: 1.1,
+  /** マウス移動 → ブロック移動の比率。小さいほど「ずずず…」と重い */
+  DRAG_SCALE: 0.32,
+  /**
+   * スティックスリップ：マウスとのズレがこれだけ溜まると「ずっ」と滑る。
+   * 荷重と抜き出し具合に応じて大きくなる
+   */
+  STICK_THRESHOLD: 0.085,
+  /** 一度の「ずっ」で滑る距離 */
+  SLIP_DISTANCE: 0.075,
+  /** 滑っている最中の速さ（ワールド単位/秒） */
+  SLIP_SPEED: 1.1,
+  /**
+   * 抜き出し具合による重さ。接触している長さが減るほど軽くなる。
+   * 最初の3割がいちばん重く、半分を過ぎると軽くなる
+   */
+  EXTRACTION_MULTIPLIER: 1.35,
   /** 周囲のブロックへ伝える横向きの力 */
   SHAKE_FORCE: 6.0,
   /** 速く引いたときに、揺れがどれだけ増えるか */
@@ -85,6 +99,21 @@ export const SIDE_PULL = {
   TILT: 0.1,
   /** 揺れを伝える段数（対象ブロックから上下いくつまで） */
   SHAKE_LEVELS: 5,
+}
+
+/* ------------------------------------------------------------------
+ * 右クリックの押し戻し。
+ * 完全な UNDO ではなく「ぐっと少しだけ押し込んで調整する」操作にする
+ * ------------------------------------------------------------------ */
+export const PUSH_BACK = {
+  /** 1回の右クリックで押し戻す距離 */
+  DISTANCE: 0.22,
+  /** 押し込む速さ（この間だけ追従を速める） */
+  SPEED: 3.2,
+  /** 押し込みの勢いが周囲へ伝わる時間（秒） */
+  DURATION: 0.45,
+  /** 押し込んだときに周囲へ伝わる力 */
+  FORCE: 14.0,
 }
 /** 重なり判定に使うすき間。これだけ離れていれば重なっていないとみなす */
 const CLEAR_MARGIN = 0.02
@@ -180,6 +209,8 @@ export class Game {
     this.saidPulling = false
     this.settleShake = 0
     this.settleReacted = false
+    this.pushBackT = 0
+    this.slipRemaining = 0
     // 開始直後の初期振動で雷神が驚かないよう、少し猶予を置く
     this.dangerCooldown = 2.0
 
@@ -481,7 +512,7 @@ export class Game {
 
     window.addEventListener('keydown', (e) => {
       if (this.state === STATE.GAMEOVER) return
-      if (e.key === 'Escape') this.cancel()
+      if (e.key === 'Escape') this.cancel(true)
     })
 
     this.ui.onStart(() => this.startGame())
@@ -688,11 +719,56 @@ export class Game {
     if (this.pullAxis === 'SIDE') {
       this.sideBrokeAway = false
       this.sideGripT = 0
+      this.slipRemaining = 0
       // 引っかかりの出方をブロックごとに変える（毎回同じ場所で引っかからないように）
       this.gripPhase = (this.selected.level * 2.7 + this.selected.slot * 1.3) % (Math.PI * 2)
       // 少しだけ傾けるようにする
       setGrabbed(this.selected.body, { allowRotation: true })
     }
+  }
+
+  /**
+   * 横抜きの一歩。なめらかに滑らせず、
+   * 「溜まる → ずっ → また溜まる」を繰り返させる。
+   */
+  stepSidePull(dt, block) {
+    const load = this.sideLoad(block)
+
+    // 抜き出し具合。接している長さが減るほど軽くなる
+    const progress = clamp(Math.abs(this.pull) / MAX_SIDE_PULL, 0, 1)
+    const ease = progress < 0.3 ? 1 : progress < 0.6 ? 0.6 : 0.3
+    // 引っかかり方が一定にならないよう、距離で少し波打たせる
+    const wave = 1 + SIDE_PULL.GRIP_WAVE * Math.sin(this.pull * 11 + this.gripPhase)
+
+    const grip = this.sideBrokeAway ? SIDE_PULL.DYNAMIC_FRICTION : SIDE_PULL.STATIC_FRICTION
+    // 動き出す前は波を効かせない（下段ほど重い、の順序が崩れないように）
+    const w = this.sideBrokeAway ? wave : 1
+    const resist = 1 + grip * load * w * ease * SIDE_PULL.EXTRACTION_MULTIPLIER
+
+    const gap = this.pullTarget - this.pull
+    const sign = Math.sign(gap) || 1
+
+    if (this.slipRemaining > 0) {
+      // 「ずっ」と滑っている最中
+      const step = Math.min(this.slipRemaining, this.slipSpeed * dt, Math.abs(gap))
+      this.pull += sign * step
+      this.slipRemaining -= step
+      return
+    }
+
+    // マウスとのズレが溜まるのを待つ
+    const need = SIDE_PULL.STICK_THRESHOLD * resist
+    if (Math.abs(gap) < need) return
+
+    this.sideBrokeAway = true
+    // 溜め込んだぶんが大きいほど、一度に大きく滑る。
+    // 勢いよく引くと「ガタッ」と大きく動いて、そのぶんタワーが揺れる
+    const excess = clamp((Math.abs(gap) - need) / need, 0, 1.5)
+    this.slipRemaining = SIDE_PULL.SLIP_DISTANCE
+      * (1.6 - 0.6 * clamp(resist / 4, 0, 1))
+      * (1 + 0.9 * excess)
+    // 溜め込んだぶんが大きいほど速く滑る → そのぶんタワーへ強く伝わる
+    this.slipSpeed = SIDE_PULL.SLIP_SPEED * (1 + 1.4 * excess)
   }
 
   /**
@@ -708,9 +784,10 @@ export class Game {
    * 横抜き中、周囲のブロックへ横向きの力を伝える。
    * 速く引くほど大きく揺れるので、勢いで引き抜く攻略にはならない。
    */
-  transmitSideShake(dt, speed) {
+  transmitShake(dt, speed, forceOverride) {
     const block = this.selected
     const dir = this.pullDir
+    const moveSign = Math.sign(speed) || 1
     // 力は「実際に滑っている速さ」に比例させる。
     // 引っかかっている間だけは、強く引くと少しだけ持っていかれる（ぐっと来る感じ）。
     // 一定の力をかけ続けるとタワーが加速し続けて吹き飛ぶので、そうはしない
@@ -720,7 +797,8 @@ export class Game {
     const effort = clamp(Math.abs(this.pullTarget - this.pull) / 0.4, 0, 1)
       * (this.sideBrokeAway ? 0.75 : 0.35)
     const drive = Math.min(1, Math.max(fast, effort))
-    const mag = SIDE_PULL.SHAKE_FORCE * (0.15 + SIDE_PULL.SPEED_MULTIPLIER * drive)
+    const base = forceOverride !== undefined ? forceOverride : SIDE_PULL.SHAKE_FORCE
+    const mag = base * (0.15 + SIDE_PULL.SPEED_MULTIPLIER * drive)
     if (mag <= 0) return
 
     const force = new CANNON.Vec3()
@@ -735,7 +813,8 @@ export class Game {
       // 高い位置ほどテコが効くので、タワー全体がゆらりと傾く
       const near = 1 / (1 + dl * 0.55)
       const lever = 0.35 + 0.65 * clamp(dl / SIDE_PULL.SHAKE_LEVELS, 0, 1)
-      const f = mag * near * lever * b.body.mass
+      // 押し込んだときは、力も内向きに伝わる
+      const f = mag * near * lever * b.body.mass * moveSign
       force.set(dir.x * f, 0, dir.z * f)
       b.body.wakeUp()
       b.body.applyForce(force)
@@ -787,7 +866,10 @@ export class Game {
     this.decideDy = 0
     this.sideBrokeAway = false
     this.sideGripT = 0
+    this.slipRemaining = 0
+    this.slipSpeed = SIDE_PULL.SLIP_SPEED
     this.gripPhase = 0
+    this.pushBackT = 0
 
     this.showPullGuide(block)
 
@@ -893,10 +975,33 @@ export class Game {
   }
 
   /** 引き抜き・配置をやめて元に戻す */
-  cancel() {
+  /**
+   * @param full true なら元の位置まで戻して手を離す（Esc）。
+   *             false なら少しだけ押し戻す（右クリック）
+   */
+  cancel(full = false) {
     if (this.state === STATE.PULLING) {
-      this.canceling = true
-      this.pullTarget = 0
+      if (full) {
+        this.canceling = true
+        this.pullTarget = 0
+        return
+      }
+      // 右クリック：完全リセットではなく、ぐっと少しだけ押し込む。
+      // 基準は「いまブロックがある位置」。目標値を基準にすると、
+      // マウスが先へ行っている分だけ押し戻しにならない
+      const sign = Math.sign(this.pull) || Math.sign(this.pullTarget) || 1
+      const remain = Math.abs(this.pull) - PUSH_BACK.DISTANCE
+
+      // ほぼ元の位置まで戻っていたら、そこで手を離す
+      if (remain <= 0.02 && Math.abs(this.pull) <= 0.14) {
+        this.canceling = true
+        this.pullTarget = 0
+        return
+      }
+      // 元の位置より内側へは押し込まない
+      this.pullTarget = sign * Math.max(0, remain)
+      this.pushBackT = PUSH_BACK.DURATION
+      this.ui.say('ぐっ…', 1800)
       return
     }
     if (this.state === STATE.PLACEMENT) {
@@ -935,34 +1040,24 @@ export class Game {
       this.ui.say('そーっと…そーっと…', 2000)
     }
 
-    // 目標値へなめらかに追従させる（急激な移動で物理が壊れるのを防ぐ）
-    let rate = dt * 6
-    const isSide = this.pullAxis === 'SIDE' && !this.canceling
+    // 目標値へ追従させる（急激な移動で物理が壊れるのを防ぐ）
+    const prevPull = this.pull
+    this.pushBackT = Math.max(0, this.pushBackT - dt)
+    const pushing = this.pushBackT > 0
+    const isSide = this.pullAxis === 'SIDE' && !this.canceling && !pushing
 
     if (isSide) {
-      const load = this.sideLoad(block)
-      // 動き出す前は静止摩擦、動き出したあとは動摩擦
-      const grip = this.sideBrokeAway ? SIDE_PULL.DYNAMIC_FRICTION : SIDE_PULL.STATIC_FRICTION
-      // 接触の具合で抵抗が少し波打つ（スー…、少し重い、また動く）
-      const wave = 1 + SIDE_PULL.GRIP_WAVE * Math.sin(this.pull * 9 + this.gripPhase)
-      // 端まで来ると軽くなる
-      const nearOut = clamp(Math.abs(this.pull) / MAX_SIDE_PULL, 0, 1)
-      rate = (dt * 6) / (1 + grip * load * wave * (1 - 0.55 * nearOut))
-
-      if (!this.sideBrokeAway) {
-        // 力がたまるまでは、ほとんど動かない
-        const demand = Math.abs(this.pullTarget - this.pull)
-        if (demand > 0.03) this.sideGripT += dt
-        else this.sideGripT = Math.max(0, this.sideGripT - dt * 2)
-
-        if (this.sideGripT >= SIDE_PULL.BREAKAWAY_TIME * load) this.sideBrokeAway = true
-        else rate *= 0.12
-      }
+      this.stepSidePull(dt, block)
+    } else {
+      // 押し込み中は少し速く、それ以外は通常の追従
+      const rate = pushing ? dt * PUSH_BACK.SPEED : dt * 6
+      this.pull += (this.pullTarget - this.pull) * Math.min(1, rate)
     }
 
-    const prevPull = this.pull
-    this.pull += (this.pullTarget - this.pull) * Math.min(1, rate)
-    if (isSide) this.transmitSideShake(dt, (this.pull - prevPull) / dt)
+    const speed = (this.pull - prevPull) / dt
+    // 横抜き中と、押し込んだときは周囲へ力が伝わる
+    if (isSide) this.transmitShake(dt, speed)
+    else if (pushing) this.transmitShake(dt, speed, PUSH_BACK.FORCE)
 
     const d = this.pullDir
     const tx = this.origPos.x + d.x * this.pull
@@ -1181,6 +1276,8 @@ export class Game {
     this.settleT = 0
     this.settleShake = 0
     this.settleReacted = false
+    this.pushBackT = 0
+    this.slipRemaining = 0
     this.state = STATE.SETTLING
   }
 
