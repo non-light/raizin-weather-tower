@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import * as CANNON from 'cannon-es'
+import { balancedPalette, woodTint } from './colors.js'
 
 /* ------------------------------------------------------------------
  * ブロック寸法とタワー構成
@@ -183,20 +184,24 @@ export class Tower {
   }
 
   build() {
+    // 色が偏らないように配ってから混ぜる
+    const palette = balancedPalette(LEVELS * 3)
+    let i = 0
     for (let level = 0; level < LEVELS; level++) {
       for (let slot = 0; slot < 3; slot++) {
-        this.addBlock(level, slot)
+        this.addBlock(level, slot, palette[i++])
       }
     }
   }
 
-  addBlock(level, slot) {
+  addBlock(level, slot, color) {
     const { pos, quat, axis } = slotTransform(level, slot)
 
-    // 木目風に少しだけ色をばらつかせる
-    const shade = 0.88 + Math.random() * 0.24
+    // 木目風に少しだけ明るさをばらつかせる
+    const shade = 0.95 + Math.random() * 0.15
+    const baseColor = woodTint(color, shade)
     const mat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(0xc99a52).multiplyScalar(shade),
+      color: baseColor.clone(),
       roughness: 0.75,
       metalness: 0.05,
       emissive: 0x000000,
@@ -236,7 +241,7 @@ export class Tower {
     body.angularDamping = 0.35
     this.world.addBody(body)
 
-    const block = { mesh, body, outline, material: mat, level, slot, axis }
+    const block = { mesh, body, outline, material: mat, baseColor, color, level, slot, axis }
     mesh.userData.block = block
     this.blocks.push(block)
     return block
@@ -260,6 +265,11 @@ export class Tower {
 
   meshes() {
     return this.blocks.map((b) => b.mesh)
+  }
+
+  /** その色で、いま抜いてよいブロック */
+  selectableOfColor(colorKey) {
+    return this.blocks.filter((b) => b.color.key === colorKey && this.isSelectable(b))
   }
 
   /** 物理 → 表示 の反映 */

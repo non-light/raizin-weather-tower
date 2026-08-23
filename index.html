@@ -10,7 +10,10 @@
 
   <div id="ui">
     <div id="score">SCORE: 0000</div>
-    <div id="weather-badge">☀️ 晴れ</div>
+    <div id="status">
+      <div class="chip" id="weather-badge">天候：☀️ 晴れ</div>
+      <div class="chip" id="color-badge">指定色：—</div>
+    </div>
 
     <div id="title-tag">RAIZIN WEATHER TOWER <span>prototype</span></div>
     <div id="hint">ドラッグ＝カメラ回転 / ホイール＝ズーム / 右クリック・Esc＝もどす</div>
@@ -27,6 +30,18 @@
       <div id="mascot-art">
         <img id="raizin-img" alt="RAIZIN" />
         <div id="raizin-fallback">RAIZIN</div>
+      </div>
+    </div>
+
+    <div id="roulette">
+      <div class="rl-panel">
+        <div id="rl-title">COLOR ROULETTE</div>
+        <div id="rl-wheel">
+          <div id="rl-pointer"></div>
+          <canvas id="rl-canvas" width="320" height="320"></canvas>
+          <button id="rl-spin">SPIN</button>
+        </div>
+        <div id="rl-result"></div>
       </div>
     </div>
 

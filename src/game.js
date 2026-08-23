@@ -5,11 +5,13 @@ import {
   slotTransform, levelY, BLOCK, LEVELS,
 } from './tower.js'
 import { Weather, WEATHERS } from './weather.js'
+import { Roulette, RESULT_HOLD } from './roulette.js'
 import { SUCCESS_LINES } from './ui.js'
 
 /* ------------------------------------------------------------------
  * ゲーム状態
- *   SELECT         抜くブロックを選ぶ
+ *   ROULETTE       カラールーレットを回して、抜ける色を決める
+ *   SELECT         指定色のブロックを選ぶ
  *   PULLING        引き抜き中（完全に抜けるまで次へ進めない）
  *   PLACEMENT      置き場所を選ぶ（最上段の空きスロットから）
  *   PLACING        選んだ場所へ下ろすアニメーション
@@ -18,6 +20,7 @@ import { SUCCESS_LINES } from './ui.js'
  *   GAMEOVER
  * ------------------------------------------------------------------ */
 export const STATE = {
+  ROULETTE: 'ROULETTE',
   SELECT: 'SELECT',
   PULLING: 'PULLING',
   PLACEMENT: 'PLACEMENT',
@@ -40,6 +43,8 @@ const MAX_GRAB_SPEED = 1.4
 const SETTLE_TIME = 1.1
 /** 天候発表を見せる時間 */
 const WEATHER_TIME = 1.8
+/** 指定色ブロックのひかえめな強調 */
+const COLOR_HINT_EMISSIVE = 0x1b1408
 /** 配置モードでブロックを浮かせておく高さ */
 const HOVER_HEIGHT = 0.6
 
@@ -65,6 +70,7 @@ export class Game {
     this.tower = null
     this.weather = null
     this.markers = []
+    this.roulette = new Roulette((color) => this.onRouletteResult(color))
 
     this.bindEvents()
     this.reset()
@@ -102,15 +108,88 @@ export class Game {
     // 開始直後の初期振動で雷神が驚かないよう、少し猶予を置く
     this.dangerCooldown = 2.0
 
-    this.state = STATE.SELECT
+    this.requiredColor = null
+    this.pendingColor = null
+    this.resultHoldT = 0
 
     this.weather.set(WEATHERS.CLEAR, true)
     this.ui.setWeather(WEATHERS.CLEAR)
     this.ui.setWindy(false)
     this.ui.setScore(0)
     this.ui.hideGameOver()
-    this.ui.setPrompt('ブロックをクリックして選ぼう')
     this.ui.say('崩さないように、そーっと抜くんだぞ！', 3800)
+
+    // 天候が決まった状態からルーレットへ
+    this.enterRoulette()
+  }
+
+  /* ================= カラールーレット ================= */
+
+  enterRoulette() {
+    this.requiredColor = null
+    this.pendingColor = null
+    this.resultHoldT = 0
+    this.clearColorHint()
+    this.ui.setColor(null)
+    this.ui.setPrompt('')
+    this.state = STATE.ROULETTE
+    this.roulette.show()
+  }
+
+  /** ルーレットが止まった瞬間に呼ばれる */
+  onRouletteResult(color) {
+    this.pendingColor = color
+    this.resultHoldT = 0
+    this.ui.say(color.line, 2600)
+  }
+
+  updateRoulette(dt) {
+    this.roulette.update(dt)
+    if (!this.pendingColor) return
+
+    // 結果を少し見せてから次へ
+    this.resultHoldT += dt
+    if (this.resultHoldT < RESULT_HOLD) return
+
+    const color = this.pendingColor
+    this.pendingColor = null
+
+    // その色で抜けるブロックが1本も無ければ、回し直せるようにする
+    if (this.tower.selectableOfColor(color.key).length === 0) {
+      this.ui.say('その色はないみたい！ もう一回！', 3000)
+      this.roulette.allowRespin('その色は抜けないので、もう一回！')
+      return
+    }
+
+    this.requiredColor = color
+    this.ui.setColor(color)
+    this.applyColorHint()
+    this.roulette.hide()
+    this.state = STATE.SELECT
+    this.ui.setPrompt(`${color.emoji} ${color.label}のブロックをクリックして選ぼう`)
+  }
+
+  /** 指定色のブロックをひかえめに明るくする（強い発光はしない） */
+  applyColorHint() {
+    this.clearColorHint()
+    if (!this.requiredColor) return
+    for (const b of this.tower.selectableOfColor(this.requiredColor.key)) {
+      b.material.emissive.setHex(COLOR_HINT_EMISSIVE)
+    }
+  }
+
+  clearColorHint() {
+    if (!this.tower) return
+    for (const b of this.tower.blocks) {
+      if (b !== this.selected) b.material.emissive.setHex(0x000000)
+    }
+  }
+
+  /** いま抜けるブロックか（ジェンガのルール＋ルーレットの色） */
+  isPlayable(block) {
+    if (!this.requiredColor) return false
+    if (block.color.key !== this.requiredColor.key) return false
+    return this.tower.isSelectable(block)
   }
 
   /* ================= 入力 ================= */
@@ -139,14 +218,11 @@ export class Game {
     return this.ndc
   }
 
+  /** カーソルの下にある一番手前のブロック（色やルールは問わない） */
   pick(e) {
     this.raycaster.setFromCamera(this.setNdc(e), this.camera)
     const hits = this.raycaster.intersectObjects(this.tower.meshes(), false)
-    for (const h of hits) {
-      const block = h.object.userData.block
-      if (block && this.tower.isSelectable(block)) return block
-    }
-    return null
+    return hits.length ? hits[0].object.userData.block || null : null
   }
 
   pickMarker(e) {
@@ -176,8 +252,18 @@ export class Game {
     if (this.state === STATE.SELECT || this.state === STATE.PULLING) {
       const hit = this.pick(e)
       if (this.state === STATE.SELECT && hit) {
-        this.select(hit)
-        this.beginDrag(e)
+        if (this.isPlayable(hit)) {
+          this.select(hit)
+          this.beginDrag(e)
+          return
+        }
+        // 指定色以外・抜けない段のブロックは動かさず、理由だけ伝える
+        if (hit.color.key !== this.requiredColor.key) {
+          this.ui.say(`今回は${this.requiredColor.label}だよ！`, 1800)
+        } else {
+          this.ui.say('その段はまだ抜いちゃだめ！', 1800)
+        }
+        this.startOrbit(e)
         return
       }
       if (this.state === STATE.PULLING && hit === this.selected) {
@@ -219,15 +305,16 @@ export class Game {
       return
     }
 
-    // ホバー表示（掴めるブロックの上ではカーソルを変える）
+    // ホバー表示：抜けるブロックの上でだけ輪郭とカーソルを出す
     if (this.state === STATE.SELECT) {
-      const hit = this.pick(e)
+      const raw = this.pick(e)
+      const hit = raw && this.isPlayable(raw) ? raw : null
       if (hit !== this.hovered) {
         if (this.hovered && this.hovered !== this.selected) {
-          this.hovered.material.emissive.setHex(0x000000)
+          this.hovered.outline.visible = false
         }
         this.hovered = hit
-        if (hit && hit !== this.selected) hit.material.emissive.setHex(0x241a00)
+        if (hit) hit.outline.visible = true
       }
       this.renderer.domElement.classList.toggle('pointing', !!hit)
     }
@@ -294,6 +381,7 @@ export class Game {
     this.canceling = false
     this.pullNagCooldown = 0
 
+    this.clearColorHint()
     block.outline.visible = true
     block.material.emissive.setHex(0x6b4d00)
 
@@ -316,7 +404,7 @@ export class Game {
   }
 
   deselect() {
-    if (this.hovered) this.hovered.material.emissive.setHex(0x000000)
+    if (this.hovered && this.hovered !== this.selected) this.hovered.outline.visible = false
     this.hovered = null
     if (this.selected) {
       this.selected.outline.visible = false
@@ -413,7 +501,9 @@ export class Game {
       this.deselect()
       this.canceling = false
       this.state = STATE.SELECT
-      this.ui.setPrompt('ブロックをクリックして選ぼう')
+      this.applyColorHint()
+      const c = this.requiredColor
+      this.ui.setPrompt(c ? `${c.emoji} ${c.label}のブロックをクリックして選ぼう` : '')
       return
     }
 
@@ -623,8 +713,8 @@ export class Game {
       const line = SUCCESS_LINES[Math.floor(Math.random() * SUCCESS_LINES.length)]
       this.ui.say(line, 2000)
     }
-    this.state = STATE.SELECT
-    this.ui.setPrompt('ブロックをクリックして選ぼう')
+    // 天候 → ルーレット → ブロック選択、の順に進む
+    this.enterRoulette()
   }
 
   /* ================= 崩壊判定 ================= */
@@ -653,6 +743,7 @@ export class Game {
     this.deselect()
     this.dragging = false
     this.orbiting = false
+    this.roulette.hide()
     this.ui.setPrompt('')
     this.ui.setWindy(false)
     this.ui.say('あ〜〜〜！ くずれちゃった……', 4000)
@@ -675,6 +766,7 @@ export class Game {
     const dt = clamp(rawDt, 1 / 120, 1 / 20)
 
     switch (this.state) {
+      case STATE.ROULETTE: this.updateRoulette(dt); break
       case STATE.PULLING: this.updatePulling(dt); break
       case STATE.PLACEMENT: this.updatePlacement(dt); break
       case STATE.PLACING: this.updatePlacing(dt); break

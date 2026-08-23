@@ -45,30 +45,36 @@ html, body {
   font-family: "Menlo", "Courier New", monospace;
 }
 
-/* ---------- weather badge ---------- */
-#weather-badge {
+/* ---------- status (weather / color) ---------- */
+#status {
   position: absolute;
-  top: 16px;
+  top: 14px;
   left: 50%;
   transform: translateX(-50%);
-  padding: 8px 20px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.chip {
+  padding: 8px 18px;
   border: 2px solid var(--accent-dim);
   border-radius: 999px;
   background: var(--panel);
-  font-size: 18px;
+  font-size: 17px;
   font-weight: 700;
   letter-spacing: 1px;
   backdrop-filter: blur(4px);
   white-space: nowrap;
 }
 
-#weather-badge.pop {
-  animation: badge-pop 0.9s cubic-bezier(0.2, 1.4, 0.4, 1);
-}
-@keyframes badge-pop {
-  0%   { transform: translateX(-50%) scale(1); border-color: var(--accent-dim); }
-  25%  { transform: translateX(-50%) scale(1.35); border-color: #fff; box-shadow: 0 0 26px rgba(255,210,63,.9); }
-  100% { transform: translateX(-50%) scale(1); border-color: var(--accent-dim); }
+#color-badge { border-color: rgba(238, 242, 255, 0.25); }
+
+.chip.pop { animation: chip-pop 0.9s cubic-bezier(0.2, 1.4, 0.4, 1); }
+@keyframes chip-pop {
+  0%   { transform: scale(1); }
+  25%  { transform: scale(1.28); border-color: #fff; box-shadow: 0 0 26px rgba(255, 210, 63, 0.9); }
+  100% { transform: scale(1); }
 }
 
 #title-tag {
@@ -235,6 +241,96 @@ html, body {
   font-size: 24px;
   font-weight: 900;
   letter-spacing: 3px;
+}
+
+/* ---------- color roulette ---------- */
+#roulette {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  /* 回っている間はブロック操作をさせないので、全面で入力を受け止める */
+  background: rgba(4, 6, 20, 0.55);
+  backdrop-filter: blur(2px);
+  pointer-events: auto;
+}
+#roulette.show { display: flex; }
+
+.rl-panel {
+  padding: 22px 34px 26px;
+  border-radius: 24px;
+  background: rgba(8, 11, 30, 0.92);
+  border: 3px solid var(--accent);
+  box-shadow: 0 0 60px rgba(255, 210, 63, 0.35);
+  text-align: center;
+}
+
+#rl-title {
+  font-size: 20px;
+  font-weight: 900;
+  letter-spacing: 6px;
+  color: var(--accent);
+  margin-bottom: 14px;
+}
+
+#rl-wheel {
+  position: relative;
+  width: 320px;
+  height: 320px;
+  margin: 0 auto;
+}
+#rl-canvas { display: block; }
+
+#rl-pointer {
+  position: absolute;
+  top: -6px;
+  left: 50%;
+  margin-left: -13px;
+  width: 0;
+  height: 0;
+  border-left: 13px solid transparent;
+  border-right: 13px solid transparent;
+  border-top: 24px solid var(--accent);
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.6));
+  z-index: 2;
+}
+
+#rl-spin {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 108px;
+  height: 108px;
+  border-radius: 50%;
+  border: 5px solid #fff3c4;
+  background: radial-gradient(circle at 50% 35%, #ffe37a, #ffc409);
+  color: #241b00;
+  font-family: inherit;
+  font-size: 24px;
+  font-weight: 900;
+  letter-spacing: 2px;
+  cursor: pointer;
+  box-shadow: 0 0 26px rgba(255, 210, 63, 0.7);
+}
+#rl-spin:disabled {
+  background: #4a4a58;
+  border-color: #6b6b7a;
+  color: #a0a0b0;
+  cursor: default;
+  box-shadow: none;
+}
+#rl-spin:not(:disabled):active { transform: translate(-50%, -50%) scale(0.94); }
+
+#rl-result {
+  margin-top: 16px;
+  min-height: 34px;
+  font-size: 26px;
+  font-weight: 900;
+  letter-spacing: 2px;
+  color: var(--text);
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.8);
 }
 
 /* ---------- game over ---------- */

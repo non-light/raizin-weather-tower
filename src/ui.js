@@ -13,6 +13,7 @@ export class UI {
   constructor() {
     this.score = document.getElementById('score')
     this.badge = document.getElementById('weather-badge')
+    this.colorBadge = document.getElementById('color-badge')
     this.flash = document.getElementById('weather-flash')
     this.flashMain = document.getElementById('weather-flash-main')
     this.flashSub = document.getElementById('weather-flash-sub')
@@ -42,7 +43,7 @@ export class UI {
   }
 
   setWeather(w) {
-    this.badge.textContent = `${w.icon} ${w.label}`
+    this.badge.textContent = `天候：${w.icon} ${w.label}`
     this.badge.dataset.weather = w.key
     // 切り替わったことが分かるように、小さい表示も一度跳ねさせる
     this.badge.classList.remove('pop')
@@ -50,6 +51,24 @@ export class UI {
     this.badge.classList.add('pop')
     clearTimeout(this._badgeTimer)
     this._badgeTimer = setTimeout(() => this.badge.classList.remove('pop'), 900)
+  }
+
+  /** ルーレットで決まった指定色。次のターンまで出しっぱなしにする */
+  setColor(color) {
+    if (!color) {
+      this.colorBadge.textContent = '指定色：—'
+      this.colorBadge.style.borderColor = ''
+      this.colorBadge.style.color = ''
+      return
+    }
+    this.colorBadge.textContent = `指定色：${color.emoji} ${color.label}`
+    this.colorBadge.style.borderColor = color.css
+    this.colorBadge.style.color = color.css
+    this.colorBadge.classList.remove('pop')
+    void this.colorBadge.offsetWidth
+    this.colorBadge.classList.add('pop')
+    clearTimeout(this._colorTimer)
+    this._colorTimer = setTimeout(() => this.colorBadge.classList.remove('pop'), 900)
   }
 
   /** 天候切り替え時に画面中央へ大きく表示 → 1.8秒後に消えて小さい表示だけ残る */
