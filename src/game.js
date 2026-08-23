@@ -51,6 +51,14 @@ export const STATE = {
 const MAX_PULL = BLOCK.len * 1.35
 /** ここまで動かさないと「抜けた」と判定しない（重なり判定と併用） */
 const MIN_PULL_DISTANCE = BLOCK.len * 0.9
+
+/* --- 端ブロックの横抜き --- */
+/** 横へスライドできる最大距離 */
+const MAX_SIDE_PULL = BLOCK.wid * 2.8
+/** 横抜きで「抜けた」と判定する最小距離 */
+const MIN_SIDE_DISTANCE = BLOCK.wid * 1.5
+/** ドラッグ開始からこれだけ動いたところで、縦抜き／横抜きを決める */
+const AXIS_DECIDE_PX = 12
 /** 重なり判定に使うすき間。これだけ離れていれば重なっていないとみなす */
 const CLEAR_MARGIN = 0.02
 
@@ -62,8 +70,12 @@ const SETTLE_TIME = 1.6
 const SETTLE_REACT_TIME = 0.7
 /** 天候発表を見せる時間 */
 const WEATHER_TIME = 1.8
-/** GAME OVER 後、崩れ切るのを待つ最大時間。これを過ぎたら強制的に凍結する */
-const GAMEOVER_FREEZE_TIME = 2.5
+/**
+ * タワーが崩れてから結果画面を出すまでの「余韻」の時間。
+ * この間は物理をそのまま回して、ガラガラ崩れる様子を見せる。
+ * すぐ結果画面で覆ってしまうと、このゲームで一番おいしい瞬間が消えてしまう。
+ */
+const COLLAPSE_WATCH_TIME = 4.0
 /** 「よーし、いってみよう！」から最初の天候発表までの間 */
 const INTRO_TIME = 1.1
 
@@ -149,6 +161,10 @@ export class Game {
     this.resultHoldT = 0
     this.frozen = false
     this.gameOverT = 0
+    this.gameOverPhase = null
+    this.lastTitle = null
+    this.lastTitleIsNew = false
+    this.bookReturnTo = STATE.TITLE
 
     this.introT = 0
     this.stats = createStats()
@@ -173,15 +189,41 @@ export class Game {
 
   /* ================= 開始 ================= */
 
-  openBook() {
+  /** タイトルからも、GAME OVER の結果画面からも開ける */
+  openBook(fromGameOver = false) {
+    if (fromGameOver) {
+      if (this.state !== STATE.GAMEOVER || this.gameOverPhase !== 'RESULT') return
+      this.bookReturnTo = STATE.GAMEOVER
+      this.ui.hideGameOver()
+      this.state = STATE.BOOK
+      this.book.show({
+        justEarnedId: this.lastTitle ? this.lastTitle.id : null,
+        showReplay: true,
+      })
+      return
+    }
     if (this.state !== STATE.TITLE) return
+    this.bookReturnTo = STATE.TITLE
     this.state = STATE.BOOK
     this.book.show()
   }
 
   closeBook() {
     this.book.hide()
-    if (this.state === STATE.BOOK) this.state = STATE.TITLE
+    if (this.state !== STATE.BOOK) return
+    if (this.bookReturnTo === STATE.GAMEOVER) {
+      // 結果画面へ戻す（勝手に次のゲームは始めない）
+      this.state = STATE.GAMEOVER
+      this.gameOverPhase = 'RESULT'
+      this.ui.showGameOver({
+        score: this.score,
+        blocks: this.turn,
+        weather: this.weather.current,
+        storms: this.stats.weatherTurns.STORM,
+      })
+    } else {
+      this.state = STATE.TITLE
+    }
   }
 
   /** 「ゲームスタート！」で呼ばれる。ここで初めてゲームが動き出す */
@@ -417,6 +459,8 @@ export class Game {
 
     this.ui.onStart(() => this.startGame())
     this.ui.onBook(() => this.openBook())
+    this.ui.onGameOverBook(() => this.openBook(true))
+    this.book.onReplay(() => { this.book.hide(); this.reset(); this.startGame() })
     // 「もう一度遊ぶ」はタイトルを挟まずに新しいゲームを始める
     this.ui.onRetry(() => { this.reset(); this.startGame() })
   }
@@ -494,10 +538,19 @@ export class Game {
       const dy = e.clientY - this.lastY
       this.lastX = e.clientX
       this.lastY = e.clientY
-      // マウス移動量をブロックの長手方向（画面上のベクトル）へ射影する
+
+      // 最初の数pxで「縦抜き」か「横抜き」かを決める
+      if (!this.axisLocked) {
+        this.decideDx += dx
+        this.decideDy += dy
+        if (Math.hypot(this.decideDx, this.decideDy) < AXIS_DECIDE_PX) return
+        this.lockPullAxis()
+      }
+
+      // 決まった1軸だけに動きを制限する
       const along = (dx * this.axis2.x + dy * this.axis2.y) / this.axis2.pxPerUnit
-      // 長手方向の1軸だけに制限しつつ、両側へ動かせるようにする
-      this.pullTarget = clamp(this.pullTarget + along, -MAX_PULL, MAX_PULL)
+      const [lo, hi] = this.pullRange()
+      this.pullTarget = clamp(this.pullTarget + along, lo, hi)
       this.canceling = false
       return
     }
@@ -554,33 +607,60 @@ export class Game {
    * ブロックの長手方向が画面上でどちら向きに見えるかを求める。
    * ドラッグ量(px) → 引き抜き量(world) の変換に使う。
    */
-  computeScreenAxis() {
+  /** ワールドの向き dir が、画面上でどちら向き・何px/world単位に見えるか */
+  screenAxisFor(dir) {
     // カメラを動かした直後だと行列が古いままのことがあるので、投影前に更新しておく
     this.camera.updateMatrixWorld()
     const o = this.origPos
-    const d = this.pullDir
     const p0 = new THREE.Vector3(o.x, o.y, o.z).project(this.camera)
-    const p1 = new THREE.Vector3(
-      o.x + d.x * BLOCK.len, o.y + d.y * BLOCK.len, o.z + d.z * BLOCK.len
-    ).project(this.camera)
+    const p1 = new THREE.Vector3(o.x + dir.x, o.y + dir.y, o.z + dir.z).project(this.camera)
 
-    const hw = window.innerWidth / 2
-    const hh = window.innerHeight / 2
-    const dx = (p1.x - p0.x) * hw
-    const dy = -(p1.y - p0.y) * hh
+    const dx = (p1.x - p0.x) * (window.innerWidth / 2)
+    const dy = -(p1.y - p0.y) * (window.innerHeight / 2)
     const len = Math.hypot(dx, dy)
 
-    if (len < 1e-3) {
-      // ほぼ真正面を向いている（画面上で潰れている）ときの保険
-      this.axis2 = { x: 0, y: 1, pxPerUnit: 120 }
-      return
+    // ほぼ真正面を向いている（画面上で潰れている）ときの保険
+    if (len < 1e-3) return { x: 0, y: 1, pxPerUnit: 120 }
+    // 極端に感度が上がらないよう下限を設ける
+    return { x: dx / len, y: dy / len, pxPerUnit: Math.max(60, len) }
+  }
+
+  computeScreenAxis() {
+    this.axis2 = this.screenAxisFor(this.pullDir)
+    this.longAxis2 = this.screenAxisFor(this.longDir)
+    this.sideAxis2 = this.sideDir ? this.screenAxisFor(this.sideDir) : null
+  }
+
+  /**
+   * ドラッグの向きから、縦抜き（長手方向）か横抜き（タワーの外側）かを決める。
+   * 一度決めたらそのドラッグ中は固定して、斜めに飛ばないようにする。
+   */
+  lockPullAxis() {
+    const dx = this.decideDx
+    const dy = this.decideDy
+    const alongLong = Math.abs(dx * this.longAxis2.x + dy * this.longAxis2.y)
+    // 横抜きは外側だけ。内向きのドラッグは候補にしない
+    const alongSide = this.sideAxis2
+      ? Math.max(0, dx * this.sideAxis2.x + dy * this.sideAxis2.y)
+      : -1
+
+    if (alongSide > alongLong) {
+      this.pullAxis = 'SIDE'
+      this.pullDir = this.sideDir
+      this.axis2 = this.sideAxis2
+    } else {
+      this.pullAxis = 'LONG'
+      this.pullDir = this.longDir
+      this.axis2 = this.longAxis2
     }
-    this.axis2 = {
-      x: dx / len,
-      y: dy / len,
-      // 極端に感度が上がらないよう下限を設ける
-      pxPerUnit: Math.max(60, len / BLOCK.len),
-    }
+    this.axisLocked = true
+    this.hidePullGuide()
+  }
+
+  /** その軸で引き抜ける範囲 */
+  pullRange() {
+    // 横抜きは外側だけ（タワーの中央へ押し込ませない）
+    return this.pullAxis === 'SIDE' ? [0, MAX_SIDE_PULL] : [-MAX_PULL, MAX_PULL]
   }
 
   /* ================= ブロック選択 / 引き抜き ================= */
@@ -600,11 +680,27 @@ export class Game {
     this.origPos = block.body.position.clone()
     this.origQuat = block.body.quaternion.clone()
 
-    // そのブロック自身の長手方向（ローカル +X）をワールドへ。
-    // 向きは固定せず、この軸の「両側」へ引き抜けるようにする
-    // （this.pull が正なら +方向、負なら −方向）
-    const world = block.body.quaternion.vmult(new CANNON.Vec3(1, 0, 0))
-    this.pullDir = new THREE.Vector3(world.x, world.y, world.z).normalize()
+    // 長手方向（ローカル +X）。この軸は両側へ引き抜ける
+    const lx = block.body.quaternion.vmult(new CANNON.Vec3(1, 0, 0))
+    this.longDir = new THREE.Vector3(lx.x, lx.y, lx.z).normalize()
+
+    // 端のブロックは、タワーの外側へ横スライドでも抜ける。
+    // 段の並びはブロックのローカル +Z 方向なので、slot からどちら側かが決まる
+    // （slot 0 = −Z 側 / slot 2 = +Z 側）。中央（slot 1）は横抜きなし
+    this.sideDir = null
+    if (block.slot !== 1) {
+      const lz = block.body.quaternion.vmult(new CANNON.Vec3(0, 0, 1))
+      const outward = block.slot === 2 ? 1 : -1
+      this.sideDir = new THREE.Vector3(lz.x, lz.y, lz.z).normalize().multiplyScalar(outward)
+    }
+
+    // ドラッグの向きを見て決めるまでは長手方向を仮の軸にしておく
+    this.pullAxis = 'LONG'
+    this.pullDir = this.longDir
+    this.axisLocked = false
+    this.decideDx = 0
+    this.decideDy = 0
+
     this.showPullGuide(block)
 
     setGrabbed(block.body)
@@ -632,22 +728,44 @@ export class Game {
    */
   showPullGuide(block) {
     if (!this.pullGuide) {
-      const mat = new THREE.MeshBasicMaterial({
+      const geo = new THREE.ConeGeometry(0.085, 0.22, 12)
+      const longMat = new THREE.MeshBasicMaterial({
         color: 0xffd23f, transparent: true, opacity: 0.75, depthTest: false,
       })
-      const geo = new THREE.ConeGeometry(0.085, 0.22, 12)
+      // 横抜きは別の色にして、違う抜き方だと分かるようにする
+      const sideMat = new THREE.MeshBasicMaterial({
+        color: 0x7fe3ff, transparent: true, opacity: 0.8, depthTest: false,
+      })
       const group = new THREE.Group()
-      const plus = new THREE.Mesh(geo, mat)
+
+      const plus = new THREE.Mesh(geo, longMat)
       plus.position.set(BLOCK.len / 2 + 0.2, 0, 0)
       plus.rotation.z = -Math.PI / 2
-      const minus = new THREE.Mesh(geo, mat)
+
+      const minus = new THREE.Mesh(geo, longMat)
       minus.position.set(-(BLOCK.len / 2 + 0.2), 0, 0)
       minus.rotation.z = Math.PI / 2
-      group.add(plus, minus)
+
+      const side = new THREE.Mesh(geo, sideMat)
+
+      group.add(plus, minus, side)
       group.renderOrder = 997
       this.pullGuide = group
+      this.pullGuideSide = side
       this.scene.add(group)
     }
+
+    // 中央ブロックには横抜きの矢印を出さない
+    const side = this.pullGuideSide
+    if (block.slot === 1) {
+      side.visible = false
+    } else {
+      const out = block.slot === 2 ? 1 : -1
+      side.visible = true
+      side.position.set(0, 0, out * (BLOCK.wid / 2 + 0.2))
+      side.rotation.set(out > 0 ? Math.PI / 2 : -Math.PI / 2, 0, 0)
+    }
+
     this.pullGuide.position.copy(block.mesh.position)
     this.pullGuide.quaternion.copy(block.mesh.quaternion)
     this.pullGuide.visible = true
@@ -673,7 +791,8 @@ export class Game {
    */
   isFullyPulled() {
     if (!this.selected) return false
-    if (Math.abs(this.actualPull()) < MIN_PULL_DISTANCE) return false
+    const need = this.pullAxis === 'SIDE' ? MIN_SIDE_DISTANCE : MIN_PULL_DISTANCE
+    if (Math.abs(this.actualPull()) < need) return false
 
     const me = this.selected.body
     me.updateAABB()
@@ -1003,6 +1122,7 @@ export class Game {
   gameOver() {
     if (this.state === STATE.GAMEOVER) return
     this.state = STATE.GAMEOVER
+    this.gameOverPhase = 'COLLAPSE'
     this.gameOverT = 0
     this.frozen = false
     // 掴んだままだと物理が止まらないので、手を離してから終了する
@@ -1015,7 +1135,8 @@ export class Game {
     this.ui.hideColorChoice()
     this.ui.setPrompt('')
     this.ui.setWindy(false)
-    this.ui.saySequence(['わーーー！', 'くずれちゃった…！', 'でも、ここまでできたよ！'], 1700)
+    // 崩れているあいだ、雷神も一緒に「あ〜！」となる
+    this.ui.saySequence(['あっ…！', 'わわわわ…！', 'ああ〜…くずれちゃった…！'], 1400)
     const st = this.stats
     st.durationSec = (performance.now() - st.startedAt) / 1000
     st.finalShake = this.tower.maxSpeed(null)
@@ -1024,19 +1145,29 @@ export class Game {
     st.blocksPlaced = this.turn
     st.maxLevel = Math.max(st.maxLevel, this.topLevel)
 
+    // 称号はここで決めて図鑑に登録するが、発表は余韻のあと
+    const title = pickTitle(st)
+    this.lastTitle = title
+    this.lastTitleIsNew = unlock(title.id)
+  }
+
+  /** 崩壊の余韻が終わったら、ゆっくり結果画面と称号を出す */
+  showResult() {
+    this.gameOverPhase = 'RESULT'
+    this.freezeTower()
+
     this.ui.showGameOver({
       score: this.score,
       blocks: this.turn,
       weather: this.weather.current,
-      storms: st.weatherTurns.STORM,
+      storms: this.stats.weatherTurns.STORM,
     })
+    this.ui.say('でも、ここまでできたよ！', 2400)
 
-    // 称号を決めて図鑑に登録する
-    const title = pickTitle(st)
-    const isNew = unlock(title.id)
-    this.lastTitle = title
+    const title = this.lastTitle
+    const isNew = this.lastTitleIsNew
     this.ui.revealTitle(title, isNew, () => {
-      if (isNew) this.ui.saySequence(['お、新しい称号だ〜！', titleLine(title)], 1900)
+      if (isNew) this.ui.saySequence(['お、新しい称号だ〜！', '新しいの、増えた〜！'], 1900)
       else this.ui.say(titleLine(title), 2600)
     })
   }
@@ -1048,16 +1179,14 @@ export class Game {
    * わずかな時間だけ物理を進めてから完全に凍結する。
    */
   updateGameOver(dt) {
-    if (this.frozen) return
+    if (this.gameOverPhase !== 'COLLAPSE') return
 
+    // 余韻のあいだは物理だけ動かして、最後まで崩れる様子を見せる
     this.gameOverT += dt
     this.world.step(1 / 120, dt, 6)
     this.tower.sync()
 
-    const atRest = this.tower.maxSpeed(null) < 0.05
-    if (atRest || this.gameOverT > GAMEOVER_FREEZE_TIME) {
-      this.freezeTower()
-    }
+    if (this.gameOverT >= COLLAPSE_WATCH_TIME) this.showResult()
   }
 
   /** タワーを完全に停止させる（画面には残す） */

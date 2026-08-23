@@ -34,6 +34,9 @@ export class Book {
     this.confirm = document.getElementById('book-confirm')
     this.filter = 'ALL'
     this.opened = false
+    /** 今回のプレイで獲得した称号（図鑑で目立たせる） */
+    this.justEarnedId = null
+    this.replayBtn = document.getElementById('book-replay')
 
     document.getElementById('book-img').src = raizinUrl
     document.getElementById('book-back').addEventListener('click', onBack)
@@ -67,11 +70,30 @@ export class Book {
     }
   }
 
-  show() {
+  /**
+   * @param {object} opts
+   *   justEarnedId … 今回獲得した称号。カードを強調して自動スクロールする
+   *   showReplay   … GAME OVER から来たときは「もう一度遊ぶ」も出す
+   */
+  show(opts = {}) {
+    this.justEarnedId = opts.justEarnedId || null
+    this.replayBtn.classList.toggle('show', !!opts.showReplay)
+    // 今回の称号が別カテゴリだと見つからないので、一覧に戻しておく
+    if (this.justEarnedId) {
+      this.filter = 'ALL'
+      this.buildTabs()
+    }
     this.root.classList.add('show')
     this.render()
     this.opened = true
+
+    if (this.justEarnedId) {
+      const card = this.grid.querySelector('.just-earned')
+      if (card) card.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    }
   }
+
+  onReplay(cb) { this.replayBtn.addEventListener('click', cb) }
 
   hide() {
     this.root.classList.remove('show')
@@ -80,6 +102,7 @@ export class Book {
 
   /** 集まり具合で雷神のひとことを変える */
   mascotLine(n, total) {
+    if (this.justEarnedId) return '新しいの、増えた〜！'
     if (n >= total) return '全部そろった〜！すごい！'
     if (n >= 45) return 'あとちょっと…！'
     if (n >= total / 2) return 'おお…たくさん集まってきた！'
@@ -107,8 +130,9 @@ export class Book {
   }
 
   card({ title, unlocked, unlockedAt, count }) {
+    const justEarned = unlocked && title.id === this.justEarnedId
     const el = document.createElement('div')
-    el.className = 'tcard' + (unlocked ? '' : ' locked')
+    el.className = 'tcard' + (unlocked ? '' : ' locked') + (justEarned ? ' just-earned' : '')
     el.dataset.rarity = title.rarity.key
 
     const name = unlocked ? title.name : title.hiddenName
@@ -120,7 +144,7 @@ export class Book {
         <span class="tcard-no">No.${String(title.number).padStart(2, '0')}</span>
         <span class="tcard-rarity">${title.rarity.label}</span>
       </div>
-      <div class="tcard-name">${legend}${name}</div>
+      <div class="tcard-name">${legend}${name}${justEarned ? '<span class="tcard-new">NEW</span>' : ''}</div>
       <div class="tcard-cat">カテゴリ：${CATEGORY_LABEL[title.category] || title.category}</div>
       <div class="tcard-body">${body}</div>
       ${unlocked && unlockedAt ? `<div class="tcard-date">${formatDate(unlockedAt)}${count > 1 ? `（${count}回）` : ''}</div>` : ''}

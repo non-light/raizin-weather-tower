@@ -46,6 +46,8 @@ export class UI {
     this.trNew = document.getElementById('tr-new')
     this.trName = document.getElementById('tr-name')
     this.trRarity = document.getElementById('tr-rarity')
+    this.trNewHint = document.getElementById('tr-newhint')
+    this.goBook = document.getElementById('go-book')
     this.tsBook = document.getElementById('ts-book')
     this.retryBtn = document.getElementById('retry')
 
@@ -270,7 +272,10 @@ export class UI {
     this.finalBlocks.textContent = `${blocks}本`
     this.finalWeather.textContent = `${weather.icon} ${weather.label}`
     this.finalStorms.textContent = `${storms}回`
+    // 崩れたタワーを残したまま、ゆっくり浮かび上がらせる
     this.gameover.classList.add('show')
+    void this.gameover.offsetWidth
+    this.gameover.classList.add('visible')
   }
 
   /**
@@ -279,6 +284,8 @@ export class UI {
    */
   revealTitle(title, isNew, onRevealed) {
     this.titleReveal.classList.remove('revealed')
+    this.trNewHint.classList.toggle('show', !!isNew)
+    this.goBook.classList.toggle('has-new', !!isNew)
     this.titleReveal.dataset.rarity = title.rarity.key
     this.trName.textContent = title.name
     this.trRarity.textContent = title.rarity.key === 'LEGENDARY'
@@ -297,7 +304,8 @@ export class UI {
   }
 
   onBook(cb) { this.tsBook.addEventListener('click', cb) }
-  hideGameOver() { this.gameover.classList.remove('show') }
+  hideGameOver() { this.gameover.classList.remove('show', 'visible') }
 
   onRetry(cb) { this.retryBtn.addEventListener('click', cb) }
+  onGameOverBook(cb) { this.goBook.addEventListener('click', cb) }
 }

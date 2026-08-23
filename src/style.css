@@ -623,14 +623,18 @@ body.title-mode #mascot { display: none; }
   display: none;
   align-items: center;
   justify-content: center;
-  background: rgba(4, 6, 20, 0.78);
+  /* 崩れたタワーが透けて見えるくらいにしておく */
+  background: rgba(4, 6, 20, 0.72);
   pointer-events: auto;
+  opacity: 0;
+  transition: opacity 0.7s ease;
 }
 #gameover.show { display: flex; }
+#gameover.visible { opacity: 1; }
 .go-inner { text-align: center; }
 #gameover h1 {
   margin: 0 0 8px;
-  font-size: 74px;
+  font-size: 56px;
   font-weight: 900;
   letter-spacing: 8px;
   color: #ff5252;
@@ -966,4 +970,88 @@ body.title-mode #mascot { display: none; }
   #rl-canvas { width: 200px; height: 200px; }
   #rl-spin { width: 72px; height: 72px; font-size: 16px; }
   #weather-flash-main, #sf-main { font-size: 44px; }
+}
+
+
+/* ---------- game over: 称号を主役にする ---------- */
+#tr-newhint {
+  display: none;
+  margin-top: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #7ef0a0;
+}
+#tr-newhint.show { display: block; }
+
+.go-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: center;
+}
+
+/* 称号収集がこのゲームの主役なので、図鑑ボタンをメインにする */
+#go-book {
+  padding: 17px 46px;
+  font-family: inherit;
+  font-size: 22px;
+  font-weight: 900;
+  letter-spacing: 2px;
+  color: #241b00;
+  background: linear-gradient(180deg, #ffe37a, #ffc409);
+  border: 3px solid #fff3c4;
+  border-radius: 12px;
+  cursor: pointer;
+  box-shadow: 0 6px 0 #96700a, 0 0 30px rgba(255, 210, 63, 0.45);
+}
+#go-book:active { transform: translateY(4px); box-shadow: 0 2px 0 #96700a; }
+#go-book.has-new { animation: legend-pulse 1.3s ease-in-out infinite; }
+
+/* 「もう一度遊ぶ」も押しやすさは保つ */
+#retry {
+  padding: 12px 34px;
+  font-size: 17px;
+  background: rgba(10, 14, 38, 0.9);
+  color: var(--accent);
+  border: 2px solid var(--accent-dim);
+  box-shadow: none;
+}
+#retry:active { transform: translateY(2px); box-shadow: none; }
+
+/* ---------- 図鑑：今回獲得したカード ---------- */
+.book-head-right { display: flex; gap: 10px; align-items: center; }
+#book-replay {
+  display: none;
+  padding: 10px 20px;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 800;
+  color: #241b00;
+  background: linear-gradient(180deg, #ffe37a, #ffc409);
+  border: 2px solid #fff3c4;
+  border-radius: 10px;
+  cursor: pointer;
+}
+#book-replay.show { display: block; }
+
+.tcard.just-earned {
+  border-color: #7ef0a0;
+  box-shadow: 0 0 26px rgba(126, 240, 160, 0.55);
+  animation: just-earned 1.6s ease-in-out infinite;
+}
+@keyframes just-earned {
+  0%, 100% { box-shadow: 0 0 16px rgba(126, 240, 160, 0.35); }
+  50%      { box-shadow: 0 0 34px rgba(126, 240, 160, 0.8); }
+}
+.tcard-new {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #7ef0a0;
+  color: #06301a;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 1px;
+  vertical-align: middle;
 }
