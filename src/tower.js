@@ -10,7 +10,7 @@ export const LEVELS = 12
 export const MASS = 2.0
 
 /** 段どうし・ブロックどうしの隙間。0 だと初期状態でめり込んで暴れる */
-const GAP_Y = 0.0015
+const GAP_Y = 0.001
 const GAP_X = 0.005
 
 export const levelY = (level) => BLOCK.hei / 2 + level * (BLOCK.hei + GAP_Y)
@@ -155,9 +155,24 @@ export class Tower {
     this.presettle()
   }
 
-  /** ゲーム開始前に物理を少し進めて、初期のガタつきを消しておく */
+  /**
+   * ゲーム開始前に物理を少し進めて、初期のガタつきを消しておく。
+   * 沈み込んだぶんの高さは活かしつつ、横位置と向きは理想値へ揃え直すことで、
+   * 見た目がきれいに整ったタワーから始められる。
+   */
   presettle(steps = 90) {
-    for (let i = 0; i < steps; i++) this.world.step(1 / 60)
+    for (let i = 0; i < steps; i++) this.world.step(1 / 120)
+
+    for (const b of this.blocks) {
+      const { pos, quat } = slotTransform(b.level, b.slot)
+      b.body.position.x = pos.x
+      b.body.position.z = pos.z
+      b.body.quaternion.copy(quat)
+      b.body.velocity.setZero()
+      b.body.angularVelocity.setZero()
+    }
+    // 揃え直した状態でもう一度落ち着かせてから眠らせる
+    for (let i = 0; i < 30; i++) this.world.step(1 / 120)
     for (const b of this.blocks) {
       b.body.velocity.setZero()
       b.body.angularVelocity.setZero()
