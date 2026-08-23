@@ -12,7 +12,7 @@
     <div id="score">SCORE: 0000</div>
     <div id="status">
       <div class="chip" id="weather-badge">天候：☀️ 晴れ</div>
-      <div class="chip" id="color-badge">指定色：—</div>
+      <div class="chip" id="color-badge">指定：—</div>
     </div>
 
     <div id="title-tag">RAIZIN WEATHER TOWER <span>prototype</span></div>
@@ -33,6 +33,69 @@
       </div>
     </div>
 
+    <div id="title-screen">
+      <div class="ts-panel">
+        <h1 id="ts-title">RAIZIN<span>WEATHER TOWER</span></h1>
+        <div id="ts-mascot">
+          <img id="ts-img" alt="RAIZIN" />
+          <div id="ts-fallback">RAIZIN</div>
+        </div>
+        <div id="ts-bubble"><span id="ts-bubble-text"></span></div>
+        <div class="ts-buttons">
+          <button id="ts-start">ゲームスタート！</button>
+          <button id="ts-book">称号図鑑</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="book">
+      <div class="book-head">
+        <div class="book-head-left">
+          <h2>称号図鑑</h2>
+          <div id="book-count">獲得 0 / 50</div>
+          <div id="book-pct">0% COMPLETE</div>
+        </div>
+        <button id="book-back">← もどる</button>
+      </div>
+      <div id="book-complete">⚡ 50 / 50 COMPLETE ⚡</div>
+      <div id="book-tabs"></div>
+      <div id="book-grid"></div>
+      <div class="book-foot">
+        <span id="book-note"></span>
+        <button id="book-reset">称号データをリセット</button>
+      </div>
+      <div id="book-mascot">
+        <div id="book-bubble"><span id="book-bubble-text"></span></div>
+        <img id="book-img" alt="RAIZIN" />
+      </div>
+      <div id="book-confirm">
+        <div class="bc-panel">
+          <p>本当に称号データをリセットしますか？</p>
+          <div class="bc-buttons">
+            <button id="bc-cancel">キャンセル</button>
+            <button id="bc-ok">リセットする</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="special-flash">
+      <div id="sf-main"></div>
+      <div id="sf-sub"></div>
+    </div>
+
+    <div id="fx">
+      <div id="fx-flash"></div>
+      <div id="fx-sparkles"></div>
+    </div>
+
+    <div id="color-choice">
+      <div class="cc-panel">
+        <div id="cc-title">⚡ 好きな色をえらぼう</div>
+        <div id="cc-buttons"></div>
+      </div>
+    </div>
+
     <div id="roulette">
       <div class="rl-panel">
         <div id="rl-title">COLOR ROULETTE</div>
@@ -48,7 +111,18 @@
     <div id="gameover">
       <div class="go-inner">
         <h1>GAME OVER</h1>
-        <p id="final-score">SCORE: 0000</p>
+        <p id="final-score">SCORE：0000</p>
+        <ul id="final-stats">
+          <li><span>積んだブロック</span><b id="final-blocks">0本</b></li>
+          <li><span>最終天候</span><b id="final-weather">☀️ 晴れ</b></li>
+          <li><span>突破した嵐</span><b id="final-storms">0回</b></li>
+        </ul>
+        <div id="title-reveal">
+          <div id="tr-lead">今回の称号は…</div>
+          <div id="tr-new">NEW TITLE！</div>
+          <div id="tr-name">？？？</div>
+          <div id="tr-rarity">COMMON</div>
+        </div>
         <button id="retry">もう一度遊ぶ</button>
       </div>
     </div>

@@ -6,29 +6,75 @@ export const WEATHERS = {
     key: 'CLEAR',
     icon: '☀️',
     label: '晴れ',
-    line: '今日はいい天気だぞ！ どんどん抜こう！',
+    line: '今日は、のんびりできそう！',
   },
   FOG: {
     key: 'FOG',
     icon: '🌫️',
     label: '霧',
-    line: '霧が出てきたぞ……見えるかな？',
+    line: '今日は霧が多いみたい…見えるかな',
   },
   WIND: {
     key: 'WIND',
     icon: '💨',
     label: '風',
-    line: '風が強くなってきたぞ！',
+    line: '今日は風が強そう…ゆらゆらするかも',
+  },
+  STORM: {
+    key: 'STORM',
+    icon: '⛈️',
+    label: '嵐',
+    line: 'むむ…今日は、ちょっと荒れそう…',
+    lines: ['わわっ、嵐だ〜！', 'これは、そーっといかないと…'],
   },
 }
 
-const WEATHER_LIST = [WEATHERS.CLEAR, WEATHERS.FOG, WEATHERS.WIND]
+/** 抽選の重み。嵐はレアにしておく */
+const WEATHER_POOL = [
+  { w: WEATHERS.CLEAR, weight: 3 },
+  { w: WEATHERS.FOG, weight: 3 },
+  { w: WEATHERS.WIND, weight: 3 },
+  { w: WEATHERS.STORM, weight: 1.4 },
+]
+
+/** 嵐のときの倍率（風は強め、霧はうっすら） */
+const STORM_WIND_MULT = 1.35
+const STORM_FOG_DENSITY = 0.055
+
+/* ------------------------------------------------------------------
+ * 霧の設定。濃さを変えたいときはここだけ触ればよい
+ * ------------------------------------------------------------------ */
+export const FOG = {
+  /** 晴れているときの薄い霧 */
+  DENSITY_CLEAR: 0.012,
+  /**
+   * 霧のターンの濃さ（FogExp2）。距離だけで一様にかかるので上げすぎ注意。
+   * ここを上げるとタワー全体が白飛びする。「濃さ」はレイヤー側で作る
+   */
+  DENSITY: 0.095,
+  /** タワーの前を流れる霧レイヤーの不透明度 */
+  OPACITY: 0.50,
+  /** タワーを取り巻く霧の不透明度 */
+  AMBIENT_OPACITY: 0.30,
+  /** 地面付近に溜まる霧の不透明度 */
+  GROUND_OPACITY: 0.58,
+  /** 霧が流れる速さ（ワールド単位/秒） */
+  SPEED: 0.55,
+  /** 濃い / 薄いのうねりの周期（秒） */
+  PULSE_PERIOD: 7.0,
+  /** うねりの深さ。0 = 一定、1 = 完全に消えるまで薄くなる */
+  PULSE_DEPTH: 0.45,
+  /** 霧が広がりきるまでの時間（秒） */
+  FADE_IN: 1.1,
+  /** 地面の霧が濃く効く高さ（この高さより下がとくに見えづらい） */
+  GROUND_TOP: 1.4,
+}
 
 const BG_CLEAR = 0x070b1e
-const BG_FOG = 0x232a4d
-const FOG_COLOR = 0x39406b
-const DENSITY_CLEAR = 0.012
-const DENSITY_FOG = 0.07
+const BG_FOG = 0x39406b
+const FOG_COLOR = 0x5a648f
+const DENSITY_CLEAR = FOG.DENSITY_CLEAR
+const DENSITY_FOG = FOG.DENSITY
 
 /* --- 風 ---------------------------------------------------------- */
 /** 1サイクル = 吹く時間 + 止む時間。止んでいる間にタワーが落ち着く */
@@ -72,10 +118,13 @@ export class Weather {
 
     this.softTexture = makeSoftTexture()
     this.mist = []
+    this.driftMist = []
+    this.groundMist = []
     this.clouds = []
     this.buildMist()
     this.buildClouds()
     this.buildStreaks()
+    this.fogT = 0
 
     this.windDir = new THREE.Vector2(1, 0)
     this.windAxis = new THREE.Vector2(1, 0)
@@ -89,24 +138,56 @@ export class Weather {
 
   buildMist() {
     const group = new THREE.Group()
-    // タワーを囲むように配置。手前側にも入るので「下の方が見づらい」感じになる
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2
-      const s = new THREE.Sprite(new THREE.SpriteMaterial({
-        map: this.softTexture,
-        color: 0x9fb0dd,
-        transparent: true,
-        opacity: 0,
-        depthWrite: false,
-      }))
-      s.scale.set(9, 3.6, 1)
-      s.position.set(Math.cos(a) * 3.2, 0.5 + (i % 2) * 0.7, Math.sin(a) * 3.2)
-      s.renderOrder = 5
+
+    // 1) タワーを囲む霧。ゆっくり回るので濃淡が移動して見える
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2
+      const s = this.makeMistSprite(0xa8b8e0, 10, 4.2)
+      s.position.set(Math.cos(a) * 3.0, 0.6 + (i % 3) * 0.8, Math.sin(a) * 3.0)
       group.add(s)
       this.mist.push(s)
     }
+
+    // 2) タワーの前を横切って流れる霧。これが「濃い霧が通り過ぎる」感を作る
+    for (let i = 0; i < 5; i++) {
+      const s = this.makeMistSprite(0xc2cdea, 8 + i, 3.0 + (i % 3))
+      s.userData.drift = {
+        x: -9 + i * 4.2,
+        y: 0.7 + (i % 3) * 1.1,
+        z: 1.6 + (i % 2) * 1.1,
+        speed: FOG.SPEED * (0.7 + Math.random() * 0.8),
+        phase: Math.random() * Math.PI * 2,
+      }
+      this.scene.add(s)
+      this.driftMist.push(s)
+    }
+
+    // 3) 地面付近に溜まる霧。下段がとくに見えづらくなる
+    for (let i = 0; i < 5; i++) {
+      const a = (i / 5) * Math.PI * 2
+      const s = this.makeMistSprite(0xd2dcf4, 9, 1.9)
+      s.position.set(Math.cos(a) * 2.4, FOG.GROUND_TOP * 0.34, Math.sin(a) * 2.4)
+      s.userData.spin = 0.05 + Math.random() * 0.06
+      s.userData.baseAngle = a
+      this.scene.add(s)
+      this.groundMist.push(s)
+    }
+
     this.mistGroup = group
     this.scene.add(group)
+  }
+
+  makeMistSprite(color, w, h) {
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: this.softTexture,
+      color,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+    }))
+    s.scale.set(w, h, 1)
+    s.renderOrder = 5
+    return s
   }
 
   /** 夜空を流れる雲。風のときは速く流れる */
@@ -164,18 +245,38 @@ export class Weather {
 
   /* ---------------- 天候の切り替え ---------------- */
 
-  /** 次のターンの天候を抽選（同じ天候の連続は避ける） */
+  /** 次のターンの天候を抽選（同じ天候の連続は避ける／嵐はレア） */
   roll() {
-    const pool = WEATHER_LIST.filter((w) => w.key !== this.current.key)
-    return pool[Math.floor(Math.random() * pool.length)]
+    const pool = WEATHER_POOL.filter((e) => e.w.key !== this.current.key)
+    const total = pool.reduce((a, e) => a + e.weight, 0)
+    let r = Math.random() * total
+    for (const e of pool) {
+      r -= e.weight
+      if (r <= 0) return e.w
+    }
+    return pool[pool.length - 1].w
+  }
+
+  /** 風が吹く天候か（風 と 嵐） */
+  get windActive() {
+    return this.current.key === 'WIND' || this.current.key === 'STORM'
+  }
+
+  /** 嵐は風が強い */
+  get windMultiplier() {
+    return this.current.key === 'STORM' ? STORM_WIND_MULT : 1
   }
 
   set(weather, instant = false) {
     this.current = weather
-    this.targetDensity = weather.key === 'FOG' ? DENSITY_FOG : DENSITY_CLEAR
+    if (weather.key === 'FOG') this.targetDensity = DENSITY_FOG
+    else if (weather.key === 'STORM') this.targetDensity = STORM_FOG_DENSITY
+    else this.targetDensity = DENSITY_CLEAR
     if (instant) this.density = this.targetDensity
 
-    if (weather.key === 'WIND') {
+    if (weather.key === 'FOG' || weather.key === 'STORM') this.fogT = 0
+
+    if (this.windActive) {
       this.gustT = 0
       this.gustIndex = -1
       // 風向きの軸はターンごとにランダム。突風は左右交互に吹かせて、
@@ -198,17 +299,52 @@ export class Weather {
   }
 
   updateFog(dt) {
-    this.density += (this.targetDensity - this.density) * Math.min(1, dt * 1.6)
+    this.fogT += dt
+
+    // 一気に切り替えず、FADE_IN 秒かけて広がる
+    const rate = Math.min(1, dt / FOG.FADE_IN)
+    this.density += (this.targetDensity - this.density) * rate
     this.scene.fog.density = this.density
 
     const k = clamp01((this.density - DENSITY_CLEAR) / (DENSITY_FOG - DENSITY_CLEAR))
     this.scene.background.copy(this.bgClear).lerp(this.bgFog, k)
-    for (const s of this.mist) s.material.opacity = 0.32 * k
-    if (k > 0.01) this.mistGroup.rotation.y += dt * 0.04
+    if (k < 0.005) {
+      for (const s of this.mist) s.material.opacity = 0
+      for (const s of this.driftMist) s.material.opacity = 0
+      for (const s of this.groundMist) s.material.opacity = 0
+      return
+    }
+
+    // 濃い / 薄いがゆっくり入れ替わる
+    const pulse = 1 - FOG.PULSE_DEPTH * (0.5 + 0.5 * Math.sin((this.fogT / FOG.PULSE_PERIOD) * Math.PI * 2))
+
+    // 1) 取り巻く霧
+    this.mistGroup.rotation.y += dt * 0.05
+    for (const s of this.mist) s.material.opacity = FOG.AMBIENT_OPACITY * k * pulse
+
+    // 2) 横切って流れる霧
+    for (const s of this.driftMist) {
+      const d = s.userData.drift
+      d.x += d.speed * dt
+      if (d.x > 10) d.x = -10
+      s.position.set(d.x, d.y + Math.sin(this.fogT * 0.4 + d.phase) * 0.25, d.z)
+      // 画面の端では薄く、真ん中を通るときに濃くなる
+      const across = 1 - clamp01(Math.abs(d.x) / 9)
+      s.material.opacity = FOG.OPACITY * k * pulse * (0.25 + 0.75 * across)
+    }
+
+    // 3) 地面に溜まる霧
+    for (const s of this.groundMist) {
+      s.userData.baseAngle += s.userData.spin * dt
+      const a = s.userData.baseAngle
+      s.position.x = Math.cos(a) * 2.4
+      s.position.z = Math.sin(a) * 2.4
+      s.material.opacity = FOG.GROUND_OPACITY * k * (0.7 + 0.3 * pulse)
+    }
   }
 
   updateWind(dt, tower) {
-    if (this.current.key !== 'WIND') {
+    if (!this.windActive) {
       this.gustStrength += (0 - this.gustStrength) * Math.min(1, dt * 3)
       return
     }
@@ -234,7 +370,7 @@ export class Weather {
       if (body.type !== CANNON.Body.DYNAMIC) continue
       // 高いところほど強く受ける → タワーがしなるように揺れる
       const h = 0.15 + 0.85 * clamp01(body.position.y / WIND_REF_HEIGHT)
-      const f = WIND_FORCE * this.gustStrength * h * body.mass
+      const f = WIND_FORCE * this.windMultiplier * this.gustStrength * h * body.mass
       force.set(this.windDir.x * f, 0, this.windDir.y * f)
       body.wakeUp()
       body.applyForce(force)
@@ -243,7 +379,7 @@ export class Weather {
 
   updateStreaks(dt) {
     // 吹いていない間もうっすら流しておくと「風のターン」だと分かりやすい
-    const vis = this.current.key === 'WIND' ? 0.25 + 0.75 * this.gustStrength : 0
+    const vis = this.windActive ? 0.25 + 0.75 * this.gustStrength : 0
     this.streakMaterial.opacity += (vis * 0.5 - this.streakMaterial.opacity) * Math.min(1, dt * 5)
     if (this.streakMaterial.opacity < 0.005) return
 
@@ -276,7 +412,7 @@ export class Weather {
   }
 
   updateClouds(dt) {
-    const boost = this.current.key === 'WIND' ? 1 + 6 * this.gustStrength : 1
+    const boost = this.windActive ? 1 + 6 * this.gustStrength : 1
     const vx = this.windDir.x * 0.25 * boost
     const vz = this.windDir.y * 0.25 * boost
     for (const c of this.clouds) {
@@ -290,12 +426,16 @@ export class Weather {
   dispose() {
     this.scene.remove(this.mistGroup)
     for (const s of this.mist) s.material.dispose()
+    for (const s of this.driftMist) { this.scene.remove(s); s.material.dispose() }
+    for (const s of this.groundMist) { this.scene.remove(s); s.material.dispose() }
     for (const c of this.clouds) { this.scene.remove(c); c.material.dispose() }
     this.scene.remove(this.streaks)
     this.streaks.geometry.dispose()
     this.streakMaterial.dispose()
     this.softTexture.dispose()
     this.mist = []
+    this.driftMist = []
+    this.groundMist = []
     this.clouds = []
   }
 }

@@ -5,13 +5,24 @@ import {
   slotTransform, levelY, BLOCK, LEVELS,
 } from './tower.js'
 import { Weather, WEATHERS } from './weather.js'
-import { Roulette, RESULT_HOLD } from './roulette.js'
+import { Roulette, RESULT_HOLD, SPECIAL_HOLD } from './roulette.js'
+import { SLOT_TYPE, DANGER_LEVELS, COLORS } from './colors.js'
+import { createStats } from './stats.js'
+import { pickTitle, titleLine } from './titles.js'
+import { unlock } from './collection.js'
+import { Book } from './book.js'
 import { SUCCESS_LINES } from './ui.js'
 
 /* ------------------------------------------------------------------
  * ゲーム状態
- *   ROULETTE       カラールーレットを回して、抜ける色を決める
+ *   TITLE          タイトル画面。ボタンを押すまで何も進まない
+ *   BOOK           称号図鑑。開いている間はゲームは何も進まない
+ *   INTRO          開始の合図。このあと最初の天候発表へ
+ *   ROULETTE       カラールーレットを回して、このターンの条件を決める
+ *   COLOR_CHOICE   ⚡ 雷神：好きな色を自分で選ぶ
  *   SELECT         指定色のブロックを選ぶ
+ *   SELECT_FREE    🌈 虹：どの色でも選べる
+ *   SELECT_DANGER  ⬛ 黒：下3段からしか選べない
  *   PULLING        引き抜き中（完全に抜けるまで次へ進めない）
  *   PLACEMENT      置き場所を選ぶ（最上段の空きスロットから）
  *   PLACING        選んだ場所へ下ろすアニメーション
@@ -20,8 +31,14 @@ import { SUCCESS_LINES } from './ui.js'
  *   GAMEOVER
  * ------------------------------------------------------------------ */
 export const STATE = {
+  TITLE: 'TITLE',
+  BOOK: 'BOOK',
+  INTRO: 'INTRO',
   ROULETTE: 'ROULETTE',
+  COLOR_CHOICE: 'COLOR_CHOICE',
   SELECT: 'SELECT',
+  SELECT_FREE: 'SELECT_FREE',
+  SELECT_DANGER: 'SELECT_DANGER',
   PULLING: 'PULLING',
   PLACEMENT: 'PLACEMENT',
   PLACING: 'PLACING',
@@ -40,9 +57,18 @@ const CLEAR_MARGIN = 0.02
 /** 引き抜き速度の上限。速すぎると周りのブロックを弾き飛ばしてしまう */
 const MAX_GRAB_SPEED = 1.4
 /** 置いたあと落ち着くのを待つ時間 */
-const SETTLE_TIME = 1.1
+const SETTLE_TIME = 1.6
+/** 置いた直後、揺れ具合を見て雷神が反応するまでの時間 */
+const SETTLE_REACT_TIME = 0.7
 /** 天候発表を見せる時間 */
 const WEATHER_TIME = 1.8
+/** GAME OVER 後、崩れ切るのを待つ最大時間。これを過ぎたら強制的に凍結する */
+const GAMEOVER_FREEZE_TIME = 2.5
+/** 「よーし、いってみよう！」から最初の天候発表までの間 */
+const INTRO_TIME = 1.1
+
+/** 風が強いときのひとこと（順番に出る） */
+const WIND_TALK = ['風が出てきた〜', 'ゆらゆらしてる…', 'おお…ちょっと強くなってきた…！']
 /** 指定色ブロックのひかえめな強調 */
 const COLOR_HINT_EMISSIVE = 0x1b1408
 /** 配置モードでブロックを浮かせておく高さ */
@@ -70,7 +96,8 @@ export class Game {
     this.tower = null
     this.weather = null
     this.markers = []
-    this.roulette = new Roulette((color) => this.onRouletteResult(color))
+    this.roulette = new Roulette((slot) => this.onRouletteResult(slot))
+    this.book = new Book(() => this.closeBook())
 
     this.bindEvents()
     this.reset()
@@ -105,91 +132,264 @@ export class Game {
     this.settleT = 0
     this.weatherT = 0
     this.pullNagCooldown = 0
+    this.weatherTalkCooldown = 0
+    this.windTalkIndex = -1
+    this.fogSaid = false
+    this.saidPulling = false
+    this.settleShake = 0
+    this.settleReacted = false
     // 開始直後の初期振動で雷神が驚かないよう、少し猶予を置く
     this.dangerCooldown = 2.0
 
-    this.requiredColor = null
-    this.pendingColor = null
+    this.rule = null
+    this.pendingSlot = null
     this.resultHoldT = 0
+    this.frozen = false
+    this.gameOverT = 0
+
+    this.introT = 0
+    this.stats = createStats()
+    this.stats.startedAt = performance.now()
+    this.pendingRecovery = false
+    this.turnSlotKey = null
 
     this.weather.set(WEATHERS.CLEAR, true)
     this.ui.setWeather(WEATHERS.CLEAR)
+    this.ui.setRule('—')
     this.ui.setWindy(false)
     this.ui.setScore(0)
+    this.ui.setPrompt('')
     this.ui.hideGameOver()
-    this.ui.say('崩さないように、そーっと抜くんだぞ！', 3800)
+    this.ui.hideColorChoice()
+    this.roulette.hide()
 
-    // 天候が決まった状態からルーレットへ
-    this.enterRoulette()
+    // ボタンを押すまで、天候もルーレットもスコアも動かさない
+    this.state = STATE.TITLE
+    this.ui.showTitle()
+  }
+
+  /* ================= 開始 ================= */
+
+  openBook() {
+    if (this.state !== STATE.TITLE) return
+    this.state = STATE.BOOK
+    this.book.show()
+  }
+
+  closeBook() {
+    this.book.hide()
+    if (this.state === STATE.BOOK) this.state = STATE.TITLE
+  }
+
+  /** 「ゲームスタート！」で呼ばれる。ここで初めてゲームが動き出す */
+  startGame() {
+    if (this.state !== STATE.TITLE) return
+    this.ui.hideTitle()
+    this.ui.say('よーし、いってみよう！', 2200)
+    this.introT = 0
+    this.stats = createStats()
+    this.stats.startedAt = performance.now()
+    this.pendingRecovery = false
+    this.turnSlotKey = null
+    this.state = STATE.INTRO
+  }
+
+  updateIntro(dt) {
+    this.introT += dt
+    if (this.introT < INTRO_TIME) return
+    // まず天候を発表してから、ルーレットへ
+    this.announceWeather(this.weather.current)
+  }
+
+  /** 天候を確定して発表する。見せ終わったらルーレットへ進む */
+  announceWeather(weather) {
+    this.fogSaid = false
+    this.weatherTalkCooldown = 2.5
+    this.weather.set(weather)
+    this.ui.setWeather(weather)
+    this.ui.flashWeather(weather)
+    this.ui.setWindy(this.weather.windActive)
+    if (weather.lines) this.ui.saySequence(weather.lines, 1800)
+    else this.ui.say(weather.line, 3200)
+    this.stats.weatherSeen[weather.key]++
+    this.weatherT = 0
+    this.state = STATE.WEATHER_CHANGE
   }
 
   /* ================= カラールーレット ================= */
 
   enterRoulette() {
-    this.requiredColor = null
-    this.pendingColor = null
+    this.rule = null
+    this.pendingSlot = null
     this.resultHoldT = 0
-    this.clearColorHint()
-    this.ui.setColor(null)
+    this.clearHint()
+    this.ui.setRule('—')
     this.ui.setPrompt('')
     this.state = STATE.ROULETTE
     this.roulette.show()
   }
 
   /** ルーレットが止まった瞬間に呼ばれる */
-  onRouletteResult(color) {
-    this.pendingColor = color
+  onRouletteResult(slot) {
+    this.pendingSlot = slot
     this.resultHoldT = 0
-    this.ui.say(color.line, 2600)
+    this.stats.spins++
+    this.stats.slotSeen[slot.key]++
+    this.turnSlotKey = slot.key
+    if (slot.type === SLOT_TYPE.COLOR) this.stats.colorHistory.push(slot.key)
+
+    if (slot.type === SLOT_TYPE.COLOR) {
+      this.ui.say(slot.line, 2600)
+      return
+    }
+    // 特殊マスは演出を出して、2言つづけてしゃべる
+    this.ui.playEffect(slot.key)
+    this.ui.flashSpecial(slot)
+    this.ui.saySequence(slot.lines, 1700)
   }
 
   updateRoulette(dt) {
     this.roulette.update(dt)
-    if (!this.pendingColor) return
+    if (!this.pendingSlot) return
 
-    // 結果を少し見せてから次へ
+    // 結果を少し見せてから次へ（特殊マスは演出のぶん長め）
+    const hold = this.pendingSlot.type === SLOT_TYPE.COLOR ? RESULT_HOLD : SPECIAL_HOLD
     this.resultHoldT += dt
-    if (this.resultHoldT < RESULT_HOLD) return
+    if (this.resultHoldT < hold) return
 
-    const color = this.pendingColor
-    this.pendingColor = null
+    const slot = this.pendingSlot
+    this.pendingSlot = null
 
-    // その色で抜けるブロックが1本も無ければ、回し直せるようにする
-    if (this.tower.selectableOfColor(color.key).length === 0) {
-      this.ui.say('その色はないみたい！ もう一回！', 3000)
-      this.roulette.allowRespin('その色は抜けないので、もう一回！')
+    switch (slot.type) {
+      case SLOT_TYPE.RAIZIN: return this.beginColorChoice()
+      case SLOT_TYPE.RAINBOW: return this.beginTurn({ kind: 'FREE', slot })
+      case SLOT_TYPE.DANGER: return this.beginTurn({ kind: 'DANGER', slot })
+      default: return this.beginTurn({ kind: 'COLOR', color: slot, slot })
+    }
+  }
+
+  /** ⚡ 雷神：好きな色を選ばせる。選ぶまでブロックは触れない */
+  beginColorChoice() {
+    // 1本も抜けない色は選ばせない（選んだ瞬間に詰むのを防ぐ）
+    const enabled = COLORS
+      .filter((c) => this.tower.selectableOfColor(c.key).length > 0)
+      .map((c) => c.key)
+
+    if (enabled.length === 0) {
+      this.ui.saySequence(['むむ…これはむずかしそう…', 'もう一回、ころころ〜'], 1700)
+      this.roulette.allowRespin('抜けるブロックが無いので、もう一回！')
       return
     }
 
-    this.requiredColor = color
-    this.ui.setColor(color)
-    this.applyColorHint()
     this.roulette.hide()
-    this.state = STATE.SELECT
-    this.ui.setPrompt(`${color.emoji} ${color.label}のブロックをクリックして選ぼう`)
+    this.state = STATE.COLOR_CHOICE
+    this.ui.setRule('⚡ 色をえらぶ', '#ffd23f')
+    this.ui.setPrompt('好きな色をえらぼう')
+    this.ui.showColorChoice(enabled, (color) => {
+      this.beginTurn({ kind: 'COLOR', color, viaRaizin: true })
+    })
   }
 
-  /** 指定色のブロックをひかえめに明るくする（強い発光はしない） */
-  applyColorHint() {
-    this.clearColorHint()
-    if (!this.requiredColor) return
-    for (const b of this.tower.selectableOfColor(this.requiredColor.key)) {
+  /**
+   * このターンの条件を確定して選択フェーズへ。
+   * 条件に合うブロックが1本も無ければルーレットからやり直す。
+   */
+  beginTurn(rule) {
+    this.rule = rule
+    const playable = this.playableBlocks()
+
+    if (playable.length === 0) {
+      this.rule = null
+      this.ui.saySequence(['その色、ないみたい…', 'もう一回、ころころ〜'], 1700)
+      this.ui.setRule('—')
+      this.roulette.show('その条件では抜けないので、もう一回！')
+      this.state = STATE.ROULETTE
+      return
+    }
+
+    this.roulette.hide()
+    this.applyHint()
+
+    if (rule.kind === 'FREE') {
+      this.ui.setRule('🌈 FREE', '#ff8ad4')
+      this.ui.setPrompt('どの色でもOK！ 好きなブロックをクリックしよう')
+      this.state = STATE.SELECT_FREE
+    } else if (rule.kind === 'DANGER') {
+      this.ui.setRule(`⬛ 下${DANGER_LEVELS}段`, '#ff5252')
+      this.ui.setPrompt(`下${DANGER_LEVELS}段のブロックだけ抜ける！ 色は自由`)
+      this.state = STATE.SELECT_DANGER
+    } else {
+      const c = rule.color
+      this.ui.setRule(`${rule.viaRaizin ? '⚡ ' : ''}${c.emoji} ${c.label}`, c.css)
+      this.ui.setPrompt(`${c.emoji} ${c.label}のブロックをクリックして選ぼう`)
+      this.state = STATE.SELECT
+    }
+  }
+
+  /** 引き抜きをやめたときに、同じ条件の選択フェーズへ戻る */
+  backToSelect() {
+    this.applyHint()
+    const r = this.rule
+    if (!r) { this.enterRoulette(); return }
+    if (r.kind === 'FREE') {
+      this.state = STATE.SELECT_FREE
+      this.ui.setPrompt('どの色でもOK！ 好きなブロックをクリックしよう')
+    } else if (r.kind === 'DANGER') {
+      this.state = STATE.SELECT_DANGER
+      this.ui.setPrompt(`下${DANGER_LEVELS}段のブロックだけ抜ける！ 色は自由`)
+    } else {
+      this.state = STATE.SELECT
+      this.ui.setPrompt(`${r.color.emoji} ${r.color.label}のブロックをクリックして選ぼう`)
+    }
+  }
+
+  /** いま選べるブロック（ジェンガのルール＋そのターンの条件） */
+  playableBlocks() {
+    return this.tower.blocks.filter((b) => this.isPlayable(b))
+  }
+
+  isPlayable(block) {
+    if (!this.rule) return false
+    if (!this.tower.isSelectable(block)) return false
+    if (this.rule.kind === 'FREE') return true
+    if (this.rule.kind === 'DANGER') return block.level < DANGER_LEVELS
+    return block.color.key === this.rule.color.key
+  }
+
+  /** 選べるブロックをひかえめに明るくする（強い発光はしない） */
+  applyHint() {
+    this.clearHint()
+    // 🌈 はどれでも選べるので、強調しても意味がない
+    if (!this.rule || this.rule.kind === 'FREE') return
+    for (const b of this.playableBlocks()) {
       b.material.emissive.setHex(COLOR_HINT_EMISSIVE)
     }
   }
 
-  clearColorHint() {
+  clearHint() {
     if (!this.tower) return
     for (const b of this.tower.blocks) {
       if (b !== this.selected) b.material.emissive.setHex(0x000000)
     }
   }
 
-  /** いま抜けるブロックか（ジェンガのルール＋ルーレットの色） */
-  isPlayable(block) {
-    if (!this.requiredColor) return false
-    if (block.color.key !== this.requiredColor.key) return false
-    return this.tower.isSelectable(block)
+  /** 選択フェーズかどうか（通常色・虹・黒で共通の入力処理を使う） */
+  isSelectState() {
+    return this.state === STATE.SELECT
+      || this.state === STATE.SELECT_FREE
+      || this.state === STATE.SELECT_DANGER
+  }
+
+  /** 対象外のブロックをクリックしたときの説明 */
+  rejectReason(block) {
+    if (!this.rule) return 'あれ…？'
+    if (this.rule.kind === 'DANGER' && block.level >= DANGER_LEVELS) {
+      return '下のほうだけみたい…'
+    }
+    if (this.rule.kind === 'COLOR' && block.color.key !== this.rule.color.key) {
+      return '今回は、その色じゃないみたい…'
+    }
+    return 'その段は、まだかな…'
   }
 
   /* ================= 入力 ================= */
@@ -202,14 +402,20 @@ export class Game {
     window.addEventListener('pointerup', () => this.onPointerUp())
     dom.addEventListener('wheel', (e) => {
       e.preventDefault()
+      if (this.state === STATE.GAMEOVER || this.state === STATE.COLOR_CHOICE) return
+      if (this.state === STATE.TITLE || this.state === STATE.BOOK) return
       this.orbit.zoom(e.deltaY)
     }, { passive: false })
 
     window.addEventListener('keydown', (e) => {
+      if (this.state === STATE.GAMEOVER) return
       if (e.key === 'Escape') this.cancel()
     })
 
-    this.ui.onRetry(() => this.reset())
+    this.ui.onStart(() => this.startGame())
+    this.ui.onBook(() => this.openBook())
+    // 「もう一度遊ぶ」はタイトルを挟まずに新しいゲームを始める
+    this.ui.onRetry(() => { this.reset(); this.startGame() })
   }
 
   setNdc(e) {
@@ -233,7 +439,9 @@ export class Game {
   }
 
   onPointerDown(e) {
-    if (this.state === STATE.GAMEOVER) return
+    // GAME OVER 中と ⚡ の色えらび中は、3D側の操作をすべて止める
+    if (this.state === STATE.GAMEOVER || this.state === STATE.COLOR_CHOICE) return
+    if (this.state === STATE.TITLE || this.state === STATE.INTRO || this.state === STATE.BOOK) return
     if (e.button === 2) { this.cancel(); return }
     if (e.button !== 0) return
 
@@ -249,20 +457,16 @@ export class Game {
       return
     }
 
-    if (this.state === STATE.SELECT || this.state === STATE.PULLING) {
+    if (this.isSelectState() || this.state === STATE.PULLING) {
       const hit = this.pick(e)
-      if (this.state === STATE.SELECT && hit) {
+      if (this.isSelectState() && hit) {
         if (this.isPlayable(hit)) {
           this.select(hit)
           this.beginDrag(e)
           return
         }
-        // 指定色以外・抜けない段のブロックは動かさず、理由だけ伝える
-        if (hit.color.key !== this.requiredColor.key) {
-          this.ui.say(`今回は${this.requiredColor.label}だよ！`, 1800)
-        } else {
-          this.ui.say('その段はまだ抜いちゃだめ！', 1800)
-        }
+        // 条件に合わないブロックは動かさず、理由だけ伝える
+        this.ui.say(this.rejectReason(hit), 1800)
         this.startOrbit(e)
         return
       }
@@ -281,6 +485,7 @@ export class Game {
   }
 
   onPointerMove(e) {
+    if (this.state === STATE.GAMEOVER || this.state === STATE.TITLE || this.state === STATE.BOOK) return
     if (this.dragging) {
       const dx = e.clientX - this.lastX
       const dy = e.clientY - this.lastY
@@ -306,7 +511,7 @@ export class Game {
     }
 
     // ホバー表示：抜けるブロックの上でだけ輪郭とカーソルを出す
-    if (this.state === STATE.SELECT) {
+    if (this.isSelectState()) {
       const raw = this.pick(e)
       const hit = raw && this.isPlayable(raw) ? raw : null
       if (hit !== this.hovered) {
@@ -328,7 +533,7 @@ export class Game {
 
     // 中途半端なところで手を離したら、まだ抜けていないことを伝える
     if (this.state === STATE.PULLING && this.pullNagCooldown <= 0 && this.actualPull() > 0.25) {
-      this.ui.say('もう少し引き抜こう！', 2200)
+      this.ui.say('もうちょっとかな…', 2200)
       this.pullNagCooldown = 3.0
     }
   }
@@ -381,7 +586,7 @@ export class Game {
     this.canceling = false
     this.pullNagCooldown = 0
 
-    this.clearColorHint()
+    this.clearHint()
     block.outline.visible = true
     block.material.emissive.setHex(0x6b4d00)
 
@@ -400,6 +605,8 @@ export class Game {
 
     setGrabbed(block.body)
     this.tower.wakeAll()
+    this.ui.say('それにする？', 1500)
+    this.saidPulling = false
     this.ui.setPrompt('ドラッグして完全に引き抜こう')
   }
 
@@ -477,6 +684,12 @@ export class Game {
 
     this.pullNagCooldown -= dt
 
+    // 引き抜きはじめに一度だけ声をかける
+    if (!this.saidPulling && !this.canceling && this.actualPull() > 0.35) {
+      this.saidPulling = true
+      this.ui.say('そーっと…そーっと…', 2000)
+    }
+
     // 目標値へなめらかに追従させる（急激な移動で物理が壊れるのを防ぐ）
     this.pull += (this.pullTarget - this.pull) * Math.min(1, dt * 6)
 
@@ -500,10 +713,7 @@ export class Game {
       setReleased(body)
       this.deselect()
       this.canceling = false
-      this.state = STATE.SELECT
-      this.applyColorHint()
-      const c = this.requiredColor
-      this.ui.setPrompt(c ? `${c.emoji} ${c.label}のブロックをクリックして選ぼう` : '')
+      this.backToSelect()
       return
     }
 
@@ -539,7 +749,7 @@ export class Game {
 
     this.state = STATE.PLACEMENT
     this.ui.setPrompt('置き場所をクリックして決めよう（端に置くほど不安定！）')
-    this.ui.say('どこに置く？ まんなかが安全だぞ！', 2600)
+    this.ui.saySequence(['抜けた〜！', 'どこに置こうかな？'], 1500)
   }
 
   buildMarkers() {
@@ -681,6 +891,8 @@ export class Game {
     this.deselect()
     this.tween = null
     this.settleT = 0
+    this.settleShake = 0
+    this.settleReacted = false
     this.state = STATE.SETTLING
   }
 
@@ -688,21 +900,33 @@ export class Game {
 
   updateSettling(dt) {
     this.settleT += dt
+    this.settleShake = Math.max(this.settleShake, this.tower.maxSpeed(null))
+
+    // 揺れ具合を見てひとこと
+    if (!this.settleReacted && this.settleT >= SETTLE_REACT_TIME) {
+      this.settleReacted = true
+      if (this.settleShake > 0.8) this.ui.say('おお…ちょっとどきどき…', 1600)
+      else this.ui.say('やった〜！', 1400)
+    }
+
     if (this.settleT < SETTLE_TIME) return
 
     this.score += 100
     this.turn++
     this.ui.setScore(this.score)
 
-    const next = this.weather.roll()
-    this.weather.set(next)
-    this.ui.setWeather(next)
-    this.ui.flashWeather(next)
-    this.ui.setWindy(next.key === 'WIND')
-    this.ui.say(next.line, 3200)
+    const st = this.stats
+    st.turns = this.turn
+    st.score = this.score
+    st.blocksPlaced = this.turn
+    st.maxLevel = Math.max(st.maxLevel, this.topLevel)
+    st.weatherTurns[this.weather.current.key]++
+    if (this.weather.current.key === 'FOG'
+      && this.weather.density > this.weather.targetDensity * 0.85) st.denseFogTurns++
+    if (this.turnSlotKey) st.slotCleared[this.turnSlotKey]++
+    if (this.pendingRecovery) { st.recoveries++; this.pendingRecovery = false }
 
-    this.weatherT = 0
-    this.state = STATE.WEATHER_CHANGE
+    this.announceWeather(this.weather.roll())
   }
 
   updateWeatherChange(dt) {
@@ -736,7 +960,10 @@ export class Game {
   }
 
   gameOver() {
+    if (this.state === STATE.GAMEOVER) return
     this.state = STATE.GAMEOVER
+    this.gameOverT = 0
+    this.frozen = false
     // 掴んだままだと物理が止まらないので、手を離してから終了する
     this.exitPlacement()
     if (this.selected) setReleased(this.selected.body)
@@ -744,10 +971,81 @@ export class Game {
     this.dragging = false
     this.orbiting = false
     this.roulette.hide()
+    this.ui.hideColorChoice()
     this.ui.setPrompt('')
     this.ui.setWindy(false)
-    this.ui.say('あ〜〜〜！ くずれちゃった……', 4000)
-    this.ui.showGameOver(this.score)
+    this.ui.saySequence(['わーーー！', 'くずれちゃった…！', 'でも、ここまでできたよ！'], 1700)
+    const st = this.stats
+    st.durationSec = (performance.now() - st.startedAt) / 1000
+    st.finalShake = this.tower.maxSpeed(null)
+    st.score = this.score
+    st.turns = this.turn
+    st.blocksPlaced = this.turn
+    st.maxLevel = Math.max(st.maxLevel, this.topLevel)
+
+    this.ui.showGameOver({
+      score: this.score,
+      blocks: this.turn,
+      weather: this.weather.current,
+      storms: st.weatherTurns.STORM,
+    })
+
+    // 称号を決めて図鑑に登録する
+    const title = pickTitle(st)
+    const isNew = unlock(title.id)
+    this.lastTitle = title
+    this.ui.revealTitle(title, isNew, () => {
+      if (isNew) this.ui.saySequence(['お、新しい称号だ〜！', titleLine(title)], 1900)
+      else this.ui.say(titleLine(title), 2600)
+    })
+  }
+
+  /**
+   * GAME OVER 中。
+   * 操作・ルーレット・天候・スコア・ターン進行はすべて止まっている。
+   * 崩れかけのタワーが空中で固まると不自然なので、落ち切るまでの
+   * わずかな時間だけ物理を進めてから完全に凍結する。
+   */
+  updateGameOver(dt) {
+    if (this.frozen) return
+
+    this.gameOverT += dt
+    this.world.step(1 / 120, dt, 6)
+    this.tower.sync()
+
+    const atRest = this.tower.maxSpeed(null) < 0.05
+    if (atRest || this.gameOverT > GAMEOVER_FREEZE_TIME) {
+      this.freezeTower()
+    }
+  }
+
+  /** タワーを完全に停止させる（画面には残す） */
+  freezeTower() {
+    this.frozen = true
+    for (const b of this.tower.blocks) {
+      b.body.velocity.setZero()
+      b.body.angularVelocity.setZero()
+      b.body.sleep()
+    }
+    this.tower.sync()
+  }
+
+  /** 天候そのものへのリアクション（選択中で手が空いているときだけ） */
+  checkWeatherTalk(dt) {
+    this.weatherTalkCooldown -= dt
+    if (!this.isSelectState()) return
+
+    const w = this.weather
+    if (w.current.key === 'FOG' && !this.fogSaid && w.density > w.targetDensity * 0.9) {
+      this.fogSaid = true
+      this.ui.say('これは…かなり真っ白…', 2200)
+      return
+    }
+    if (w.current.key === 'WIND' && w.gustStrength > 0.8 && this.weatherTalkCooldown <= 0) {
+      this.windTalkIndex = (this.windTalkIndex + 1) % WIND_TALK.length
+      this.ui.say(WIND_TALK[this.windTalkIndex], 2000)
+      this.weatherTalkCooldown = 9
+    }
   }
 
   /** 大きく揺れたら雷神が反応する */
@@ -755,7 +1053,9 @@ export class Game {
     this.dangerCooldown -= dt
     if (this.dangerCooldown > 0) return
     if (this.tower.maxSpeed(this.selected) > 1.3) {
-      this.ui.say('お、おお……！？', 1800)
+      this.ui.say('わわわ…だいじょうぶかな…！', 2000)
+      this.stats.dangerShakes++
+      this.pendingRecovery = true
       this.dangerCooldown = 4.5
     }
   }
@@ -765,8 +1065,21 @@ export class Game {
   update(rawDt) {
     const dt = clamp(rawDt, 1 / 120, 1 / 20)
 
+    // タイトル画面・図鑑のあいだは、天候もルーレットもスコアもターンも進めない
+    if (this.state === STATE.TITLE || this.state === STATE.BOOK) {
+      this.tower.sync()
+      return
+    }
+
+    if (this.state === STATE.GAMEOVER) {
+      this.updateGameOver(dt)
+      return
+    }
+
     switch (this.state) {
+      case STATE.INTRO: this.updateIntro(dt); break
       case STATE.ROULETTE: this.updateRoulette(dt); break
+      case STATE.COLOR_CHOICE: break // ボタンを押すまで待つ
       case STATE.PULLING: this.updatePulling(dt); break
       case STATE.PLACEMENT: this.updatePlacement(dt); break
       case STATE.PLACING: this.updatePlacing(dt); break
@@ -787,6 +1100,7 @@ export class Game {
     if (this.state !== STATE.GAMEOVER && this.state !== STATE.PLACING) {
       this.checkCollapse()
       this.checkDanger(dt)
+      this.checkWeatherTalk(dt)
     }
 
     // タワーが伸びたらカメラの注視点も少し上げる
