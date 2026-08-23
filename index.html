@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>RAIZIN WEATHER TOWER</title>
+</head>
+<body>
+  <canvas id="scene"></canvas>
+
+  <div id="ui">
+    <div id="score">SCORE: 0000</div>
+    <div id="weather-badge">☀️ 晴れ</div>
+
+    <div id="title-tag">RAIZIN WEATHER TOWER <span>prototype</span></div>
+    <div id="hint">ブロックをクリック → そのままドラッグして引き抜く（右クリック / Esc でもどす）</div>
+
+    <div id="weather-flash"></div>
+
+    <button id="place-btn">▲ 上に置く</button>
+
+    <div id="mascot">
+      <div id="bubble"><span id="bubble-text"></span></div>
+      <div id="mascot-art">
+        <img id="raizin-img" alt="RAIZIN" />
+        <div id="raizin-fallback">RAIZIN</div>
+      </div>
+    </div>
+
+    <div id="gameover">
+      <div class="go-inner">
+        <h1>GAME OVER</h1>
+        <p id="final-score">SCORE: 0000</p>
+        <button id="retry">もう一度遊ぶ</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
