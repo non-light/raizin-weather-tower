@@ -131,11 +131,21 @@ const game = new Game({ scene, camera, renderer, ui, orbit })
 
 window.addEventListener('pointerup', () => orbit.end())
 
-window.addEventListener('resize', () => {
-  camera.aspect = window.innerWidth / window.innerHeight
+/**
+ * 画面サイズを合わせる。
+ * resize イベントが飛んでこない環境（埋め込みや復帰直後）でも
+ * ずれたままにならないよう、毎フレーム軽く見張っている。
+ */
+function fitToWindow() {
+  const w = Math.max(1, window.innerWidth)
+  const h = Math.max(1, window.innerHeight)
+  const size = renderer.getSize(new THREE.Vector2())
+  if (size.x === w && size.y === h) return
+  camera.aspect = w / h
   camera.updateProjectionMatrix()
-  renderer.setSize(window.innerWidth, window.innerHeight)
-})
+  renderer.setSize(w, h)
+}
+window.addEventListener('resize', fitToWindow)
 
 let last = performance.now()
 function loop() {
@@ -143,6 +153,7 @@ function loop() {
   const now = performance.now()
   const dt = (now - last) / 1000
   last = now
+  fitToWindow()
   game.update(dt)
   renderer.render(scene, camera)
 }
