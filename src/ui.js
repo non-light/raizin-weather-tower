@@ -29,6 +29,11 @@ export class UI {
     this.tsBubble = document.getElementById('ts-bubble')
     this.tsBubbleText = document.getElementById('ts-bubble-text')
     this.tsStart = document.getElementById('ts-start')
+
+    // サイトのトップ（ゲーム一覧）は、このページの1つ上の階層。
+    // 公開時は /raizin-tower/ の下にいるので、戻り先は / になる
+    const base = import.meta.env.BASE_URL || '/'
+    document.getElementById('ts-home').href = base.replace(/[^/]+\/$/, '') || '/'
     this.specialFlash = document.getElementById('special-flash')
     this.sfMain = document.getElementById('sf-main')
     this.sfSub = document.getElementById('sf-sub')

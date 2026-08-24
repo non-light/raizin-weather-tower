@@ -49,62 +49,58 @@ export const STATE = {
 
 /** 引き抜ける最大距離。タワーの外へ完全に出せるだけの余裕を持たせる */
 const MAX_PULL = BLOCK.len * 1.35
-/** ここまで動かさないと「抜けた」と判定しない（重なり判定と併用） */
-const MIN_PULL_DISTANCE = BLOCK.len * 0.9
 
 /* --- 端ブロックの横抜き --- */
 /** 横へスライドできる最大距離 */
 const MAX_SIDE_PULL = BLOCK.wid * 2.8
-/** 横抜きで「抜けた」と判定する最小距離 */
-const MIN_SIDE_DISTANCE = BLOCK.wid * 1.5
-/** ドラッグ開始からこれだけ動いたところで、縦抜き／横抜きを決める */
-const AXIS_DECIDE_PX = 12
+/** タワーの footprint（真上から見た外周の半分） */
+const FOOTPRINT = BLOCK.len / 2
+/** 重なり判定に使うすき間 */
+const CLEAR_MARGIN = 0.02
 
 /* ------------------------------------------------------------------
- * 横抜きの手応え。バランス調整はここだけ触ればよい。
- * 横抜きが「安全で簡単な抜け道」にならないよう、重さと引っかかりを作る。
+ * 引き抜きの手応え。バランス調整はここだけ触ればよい。
+ *
+ * 端のブロックは「長手方向」と「タワー外側への横方向」を
+ * 同時に使える（斜めに引ける）。横方向はあくまで微調整なので、
+ * 感度も速度もかなり抑えてある。
  * ------------------------------------------------------------------ */
-export const SIDE_PULL = {
-  /** 動き出すまでの抵抗（静止摩擦）。大きいほど最初が重い */
-  STATIC_FRICTION: 2.4,
+export const PULL_TUNING = {
+  /** マウス入力のうち、長手方向へ反映する割合 */
+  PULL_FORWARD_SCALE: 0.5,
+  /** マウス入力のうち、横方向へ反映する割合。補助的な微調整として扱う */
+  SIDE_PULL_SCALE: 0.12,
+  /** 横方向の移動速度の上限（ワールド単位/秒）。急なマウス入力でも超えない */
+  SIDE_PULL_MAX_SPEED: 0.34,
+  /** 横方向の加速度。目標へ向かってじわっと加速する */
+  SIDE_PULL_ACCELERATION: 5.5,
+  /** 横方向の減衰。大きいほどすぐ止まる */
+  SIDE_PULL_DAMPING: 7.0,
+  /** 動き出すまでの抵抗（静止摩擦） */
+  SIDE_PULL_STATIC_FRICTION: 2.4,
   /** 動き出したあとの抵抗（動摩擦） */
-  DYNAMIC_FRICTION: 1.1,
-  /** マウス移動 → ブロック移動の比率。小さいほど「ずずず…」と重い */
-  DRAG_SCALE: 0.32,
-  /**
-   * スティックスリップ：マウスとのズレがこれだけ溜まると「ずっ」と滑る。
-   * 荷重と抜き出し具合に応じて大きくなる
-   */
-  STICK_THRESHOLD: 0.085,
-  /** 一度の「ずっ」で滑る距離 */
-  SLIP_DISTANCE: 0.075,
-  /** 滑っている最中の速さ（ワールド単位/秒） */
-  SLIP_SPEED: 1.1,
-  /**
-   * 抜き出し具合による重さ。接触している長さが減るほど軽くなる。
-   * 最初の3割がいちばん重く、半分を過ぎると軽くなる
-   */
-  EXTRACTION_MULTIPLIER: 1.35,
-  /** 周囲のブロックへ伝える横向きの力 */
+  SIDE_PULL_DYNAMIC_FRICTION: 1.1,
+  /** 上に載っている重さで、どれだけ重くなるか */
+  SIDE_PULL_LOAD_MULTIPLIER: 1.8,
+  /** 長手方向の追従のなめらかさ。小さいほどゆっくりついてくる */
+  PULL_INPUT_SMOOTHING: 6.0,
+}
+
+export const SIDE_PULL = {
+  /** 引っかかりの強弱の振れ幅（0 で一定） */
+  GRIP_WAVE: 0.45,
+  /** 動き出すのに必要な、目標とのズレ */
+  STICK_THRESHOLD: 0.055,
+  /** 引き抜き中に許す傾きの大きさ（ラジアン） */
+  TILT: 0.1,
+  /** 周囲のブロックへ伝える力 */
   SHAKE_FORCE: 6.0,
   /** 速く引いたときに、揺れがどれだけ増えるか */
   SPEED_MULTIPLIER: 2.6,
-  /** 上に載っている重さで、どれだけ重くなるか */
-  LOAD_MULTIPLIER: 1.8,
-  /** 静止摩擦を振り切るまでの時間（秒）。荷重に比例して伸びる */
-  BREAKAWAY_TIME: 0.3,
-  /** 引っかかりの強弱の振れ幅（0 で一定） */
-  GRIP_WAVE: 0.45,
-  /** 横抜き中に許す傾きの大きさ（ラジアン） */
-  TILT: 0.1,
-  /** 揺れを伝える段数（対象ブロックから上下いくつまで） */
+  /** 揺れを伝える段数 */
   SHAKE_LEVELS: 5,
 }
 
-/* ------------------------------------------------------------------
- * 右クリックの押し戻し。
- * 完全な UNDO ではなく「ぐっと少しだけ押し込んで調整する」操作にする
- * ------------------------------------------------------------------ */
 export const PUSH_BACK = {
   /** 1回の右クリックで押し戻す距離 */
   DISTANCE: 0.22,
@@ -115,8 +111,6 @@ export const PUSH_BACK = {
   /** 押し込んだときに周囲へ伝わる力 */
   FORCE: 14.0,
 }
-/** 重なり判定に使うすき間。これだけ離れていれば重なっていないとみなす */
-const CLEAR_MARGIN = 0.02
 
 /** 引き抜き速度の上限。速すぎると周りのブロックを弾き飛ばしてしまう */
 const MAX_GRAB_SPEED = 1.4
@@ -147,6 +141,8 @@ const FALL_DROP = BLOCK.hei * 2
 const FALL_COUNT = 3
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
+/** 毎フレーム使う作業用ベクトル（都度 new しない） */
+const SHAKE_DIR = new THREE.Vector3()
 
 export class Game {
   constructor({ scene, camera, renderer, ui, orbit }) {
@@ -196,8 +192,11 @@ export class Game {
     this.orbiting = false
     this.canceling = false
     this.awaitRelease = false
-    this.pull = 0
-    this.pullTarget = 0
+    this.pullLong = 0
+    this.pullSide = 0
+    this.targetLong = 0
+    this.targetSide = 0
+    this.sideVel = 0
     this.hoverSlot = 1
     this.tween = null
     this.settleT = 0
@@ -210,7 +209,6 @@ export class Game {
     this.settleShake = 0
     this.settleReacted = false
     this.pushBackT = 0
-    this.slipRemaining = 0
     // 開始直後の初期振動で雷神が驚かないよう、少し猶予を置く
     this.dangerCooldown = 2.0
 
@@ -597,20 +595,22 @@ export class Game {
       this.lastX = e.clientX
       this.lastY = e.clientY
 
-      // 最初の数pxで「縦抜き」か「横抜き」かを決める
-      if (!this.axisLocked) {
-        this.decideDx += dx
-        this.decideDy += dy
-        if (Math.hypot(this.decideDx, this.decideDy) < AXIS_DECIDE_PX) return
-        this.lockPullAxis()
-      }
+      // 軸は固定しない。マウスの動きを「長手方向」と「外側への横方向」の
+      // 両方へ同時に振り分けるので、斜めに引き抜ける
+      const long = (dx * this.longAxis2.x + dy * this.longAxis2.y) / this.longAxis2.pxPerUnit
+      this.targetLong = clamp(
+        this.targetLong + long * PULL_TUNING.PULL_FORWARD_SCALE,
+        -MAX_PULL, MAX_PULL
+      )
 
-      // 決まった1軸だけに動きを制限する
-      let along = (dx * this.axis2.x + dy * this.axis2.y) / this.axis2.pxPerUnit
-      // 横抜きはマウスの動きをそのまま反映せず、少し遅れてついてくるようにする
-      if (this.pullAxis === 'SIDE') along *= SIDE_PULL.DRAG_SCALE
-      const [lo, hi] = this.pullRange()
-      this.pullTarget = clamp(this.pullTarget + along, lo, hi)
+      if (this.sideAxis2) {
+        const side = (dx * this.sideAxis2.x + dy * this.sideAxis2.y) / this.sideAxis2.pxPerUnit
+        // 横は補助。感度をかなり落とし、外側にしか出せない（内側へは押し込めない）
+        this.targetSide = clamp(
+          this.targetSide + side * PULL_TUNING.SIDE_PULL_SCALE,
+          0, MAX_SIDE_PULL
+        )
+      }
       this.canceling = false
       return
     }
@@ -656,7 +656,6 @@ export class Game {
   }
 
   beginDrag(e) {
-    this.hidePullGuide()
     this.dragging = true
     this.lastX = e.clientX
     this.lastY = e.clientY
@@ -685,90 +684,62 @@ export class Game {
     return { x: dx / len, y: dy / len, pxPerUnit: Math.max(60, len) }
   }
 
+  /** 長手方向と、外側への横方向。両方の画面上の向きを求めておく */
   computeScreenAxis() {
-    this.axis2 = this.screenAxisFor(this.pullDir)
     this.longAxis2 = this.screenAxisFor(this.longDir)
     this.sideAxis2 = this.sideDir ? this.screenAxisFor(this.sideDir) : null
   }
 
   /**
-   * ドラッグの向きから、縦抜き（長手方向）か横抜き（タワーの外側）かを決める。
-   * 一度決めたらそのドラッグ中は固定して、斜めに飛ばないようにする。
+   * いまの引き抜き抵抗。
+   * 上に載っている重さ・抜け具合・引っかかりの波で決まる。
+   * 抜き始めがいちばん重く、半分を過ぎると軽くなる。
    */
-  lockPullAxis() {
-    const dx = this.decideDx
-    const dy = this.decideDy
-    const alongLong = Math.abs(dx * this.longAxis2.x + dy * this.longAxis2.y)
-    // 横抜きは外側だけ。内向きのドラッグは候補にしない
-    const alongSide = this.sideAxis2
-      ? Math.max(0, dx * this.sideAxis2.x + dy * this.sideAxis2.y)
-      : -1
+  pullResistance() {
+    const load = this.sideLoad(this.selected)
+    const progress = this.extractionProgress()
+    const ease = progress < 0.3 ? 1 : progress < 0.6 ? 0.6 : 0.3
+    const grip = this.sideBrokeAway
+      ? PULL_TUNING.SIDE_PULL_DYNAMIC_FRICTION
+      : PULL_TUNING.SIDE_PULL_STATIC_FRICTION
+    // 動き出したあとは、引っかかりが少し波打つ（ず…ずず…）
+    const wave = this.sideBrokeAway
+      ? 1 + SIDE_PULL.GRIP_WAVE * Math.sin(this.pullSide * 11 + this.gripPhase)
+      : 1
+    return 1 + grip * load * ease * wave
+  }
 
-    if (alongSide > alongLong) {
-      this.pullAxis = 'SIDE'
-      this.pullDir = this.sideDir
-      this.axis2 = this.sideAxis2
-    } else {
-      this.pullAxis = 'LONG'
-      this.pullDir = this.longDir
-      this.axis2 = this.longAxis2
-    }
-    this.axisLocked = true
-    this.hidePullGuide()
-
-    if (this.pullAxis === 'SIDE') {
-      this.sideBrokeAway = false
-      this.sideGripT = 0
-      this.slipRemaining = 0
-      // 引っかかりの出方をブロックごとに変える（毎回同じ場所で引っかからないように）
-      this.gripPhase = (this.selected.level * 2.7 + this.selected.slot * 1.3) % (Math.PI * 2)
-      // 少しだけ傾けるようにする
-      setGrabbed(this.selected.body, { allowRotation: true })
-    }
+  /** どれくらい抜けたか（0〜1）。長手・横のうち進んでいるほうで見る */
+  extractionProgress() {
+    return clamp(Math.max(
+      Math.abs(this.pullLong) / MAX_PULL,
+      this.pullSide / MAX_SIDE_PULL
+    ), 0, 1)
   }
 
   /**
-   * 横抜きの一歩。なめらかに滑らせず、
-   * 「溜まる → ずっ → また溜まる」を繰り返させる。
+   * 横方向の一歩。
+   * マウスへ直接追従させず、加速度・減衰・速度上限つきで少しずつ寄せる。
+   * どれだけ速くドラッグしても SIDE_PULL_MAX_SPEED を超えないので、
+   * 「一気に横へ抜けてタワーが倒れる」ことがない。
    */
-  stepSidePull(dt, block) {
-    const load = this.sideLoad(block)
+  stepSide(dt, resist) {
+    const T = PULL_TUNING
+    const err = this.targetSide - this.pullSide
 
-    // 抜き出し具合。接している長さが減るほど軽くなる
-    const progress = clamp(Math.abs(this.pull) / MAX_SIDE_PULL, 0, 1)
-    const ease = progress < 0.3 ? 1 : progress < 0.6 ? 0.6 : 0.3
-    // 引っかかり方が一定にならないよう、距離で少し波打たせる
-    const wave = 1 + SIDE_PULL.GRIP_WAVE * Math.sin(this.pull * 11 + this.gripPhase)
-
-    const grip = this.sideBrokeAway ? SIDE_PULL.DYNAMIC_FRICTION : SIDE_PULL.STATIC_FRICTION
-    // 動き出す前は波を効かせない（下段ほど重い、の順序が崩れないように）
-    const w = this.sideBrokeAway ? wave : 1
-    const resist = 1 + grip * load * w * ease * SIDE_PULL.EXTRACTION_MULTIPLIER
-
-    const gap = this.pullTarget - this.pull
-    const sign = Math.sign(gap) || 1
-
-    if (this.slipRemaining > 0) {
-      // 「ずっ」と滑っている最中
-      const step = Math.min(this.slipRemaining, this.slipSpeed * dt, Math.abs(gap))
-      this.pull += sign * step
-      this.slipRemaining -= step
-      return
+    // 動き出す前は、ズレがたまるまで踏ん張る
+    if (!this.sideBrokeAway) {
+      if (Math.abs(err) < SIDE_PULL.STICK_THRESHOLD * resist) {
+        this.sideVel *= 0.5
+        return
+      }
+      this.sideBrokeAway = true
     }
 
-    // マウスとのズレが溜まるのを待つ
-    const need = SIDE_PULL.STICK_THRESHOLD * resist
-    if (Math.abs(gap) < need) return
-
-    this.sideBrokeAway = true
-    // 溜め込んだぶんが大きいほど、一度に大きく滑る。
-    // 勢いよく引くと「ガタッ」と大きく動いて、そのぶんタワーが揺れる
-    const excess = clamp((Math.abs(gap) - need) / need, 0, 1.5)
-    this.slipRemaining = SIDE_PULL.SLIP_DISTANCE
-      * (1.6 - 0.6 * clamp(resist / 4, 0, 1))
-      * (1 + 0.9 * excess)
-    // 溜め込んだぶんが大きいほど速く滑る → そのぶんタワーへ強く伝わる
-    this.slipSpeed = SIDE_PULL.SLIP_SPEED * (1 + 1.4 * excess)
+    this.sideVel += (T.SIDE_PULL_ACCELERATION * err / resist) * dt
+    this.sideVel -= this.sideVel * Math.min(1, T.SIDE_PULL_DAMPING * dt)
+    this.sideVel = clamp(this.sideVel, -T.SIDE_PULL_MAX_SPEED, T.SIDE_PULL_MAX_SPEED)
+    this.pullSide = clamp(this.pullSide + this.sideVel * dt, 0, MAX_SIDE_PULL)
   }
 
   /**
@@ -777,25 +748,23 @@ export class Game {
    */
   sideLoad(block) {
     const above = this.tower.blocks.filter((b) => b.level > block.level).length
-    return 1 + SIDE_PULL.LOAD_MULTIPLIER * (above / this.tower.blocks.length)
+    return 1 + PULL_TUNING.SIDE_PULL_LOAD_MULTIPLIER * (above / this.tower.blocks.length)
   }
 
   /**
    * 横抜き中、周囲のブロックへ横向きの力を伝える。
    * 速く引くほど大きく揺れるので、勢いで引き抜く攻略にはならない。
    */
-  transmitShake(dt, speed, forceOverride) {
+  transmitShake(dt, dir, speed, forceOverride) {
     const block = this.selected
-    const dir = this.pullDir
-    const moveSign = Math.sign(speed) || 1
-    // 力は「実際に滑っている速さ」に比例させる。
-    // 引っかかっている間だけは、強く引くと少しだけ持っていかれる（ぐっと来る感じ）。
+    // 力は「実際に動いている速さ」に比例させる。
     // 一定の力をかけ続けるとタワーが加速し続けて吹き飛ぶので、そうはしない
-    const fast = clamp(Math.abs(speed) / 1.2, 0, 1)
+    const fast = clamp(Math.abs(speed) / PULL_TUNING.SIDE_PULL_MAX_SPEED, 0, 1)
     // 「どれだけ強く引こうとしているか」＝マウスに対する遅れ。
-    // 勢いよく引くほど大きくなるので、雑に引くとタワーが持っていかれる
-    const effort = clamp(Math.abs(this.pullTarget - this.pull) / 0.4, 0, 1)
-      * (this.sideBrokeAway ? 0.75 : 0.35)
+    // ブロック自体は速度上限で暴走しないぶん、危険さはここで表現する
+    // ブロック自体は速度上限で暴走しないので、危険さはこのズレで表現する
+    const backlog = Math.abs(this.targetSide - this.pullSide)
+    const effort = clamp(backlog / 0.35, 0, 1) * (this.sideBrokeAway ? 0.75 : 0.35)
     const drive = Math.min(1, Math.max(fast, effort))
     const base = forceOverride !== undefined ? forceOverride : SIDE_PULL.SHAKE_FORCE
     const mag = base * (0.15 + SIDE_PULL.SPEED_MULTIPLIER * drive)
@@ -814,17 +783,11 @@ export class Game {
       const near = 1 / (1 + dl * 0.55)
       const lever = 0.35 + 0.65 * clamp(dl / SIDE_PULL.SHAKE_LEVELS, 0, 1)
       // 押し込んだときは、力も内向きに伝わる
-      const f = mag * near * lever * b.body.mass * moveSign
+      const f = mag * near * lever * b.body.mass
       force.set(dir.x * f, 0, dir.z * f)
       b.body.wakeUp()
       b.body.applyForce(force)
     }
-  }
-
-  /** その軸で引き抜ける範囲 */
-  pullRange() {
-    // 横抜きは外側だけ（タワーの中央へ押し込ませない）
-    return this.pullAxis === 'SIDE' ? [0, MAX_SIDE_PULL] : [-MAX_PULL, MAX_PULL]
   }
 
   /* ================= ブロック選択 / 引き抜き ================= */
@@ -832,8 +795,11 @@ export class Game {
   select(block) {
     this.selected = block
     this.state = STATE.PULLING
-    this.pull = 0
-    this.pullTarget = 0
+    this.pullLong = 0
+    this.pullSide = 0
+    this.targetLong = 0
+    this.targetSide = 0
+    this.sideVel = 0
     this.canceling = false
     this.pullNagCooldown = 0
 
@@ -858,17 +824,9 @@ export class Game {
       this.sideDir = new THREE.Vector3(lz.x, lz.y, lz.z).normalize().multiplyScalar(outward)
     }
 
-    // ドラッグの向きを見て決めるまでは長手方向を仮の軸にしておく
-    this.pullAxis = 'LONG'
-    this.pullDir = this.longDir
-    this.axisLocked = false
-    this.decideDx = 0
-    this.decideDy = 0
     this.sideBrokeAway = false
-    this.sideGripT = 0
-    this.slipRemaining = 0
-    this.slipSpeed = SIDE_PULL.SLIP_SPEED
-    this.gripPhase = 0
+    // 引っかかりの出方をブロックごとに変える（毎回同じ場所で引っかからないように）
+    this.gripPhase = (block.level * 2.7 + block.slot * 1.3) % (Math.PI * 2)
     this.pushBackT = 0
 
     this.showPullGuide(block)
@@ -945,27 +903,30 @@ export class Game {
     if (this.pullGuide) this.pullGuide.visible = false
   }
 
-  /** 引き抜き方向に実際どれだけ動いたか（符号つき。どちら側へ抜いても絶対値で見る） */
+  /** 元の位置からどれだけ動いたか（長手＋横の合成距離） */
   actualPull() {
     if (!this.selected) return 0
     const p = this.selected.body.position
-    const d = this.pullDir
-    return (p.x - this.origPos.x) * d.x
-      + (p.y - this.origPos.y) * d.y
-      + (p.z - this.origPos.z) * d.z
+    return Math.hypot(p.x - this.origPos.x, p.z - this.origPos.z)
   }
 
   /**
    * 完全に引き抜けたか。
-   * 「元の位置から十分離れている」かつ「どのブロックとも重なっていない」で判定する。
+   * 真上から見て「タワーの外周から完全に出ている」ことを基準にする。
+   * 長手方向・横方向・その組み合わせ、どの抜き方でも同じ基準で判定できる。
    */
   isFullyPulled() {
     if (!this.selected) return false
-    const need = this.pullAxis === 'SIDE' ? MIN_SIDE_DISTANCE : MIN_PULL_DISTANCE
-    if (Math.abs(this.actualPull()) < need) return false
 
     const me = this.selected.body
     me.updateAABB()
+    const a = me.aabb
+    const fp = FOOTPRINT + CLEAR_MARGIN
+    const outsideX = a.lowerBound.x > fp || a.upperBound.x < -fp
+    const outsideZ = a.lowerBound.z > fp || a.upperBound.z < -fp
+    if (!outsideX && !outsideZ) return false
+
+    // 念のため、どのブロックとも重なっていないことも確かめる
     for (const b of this.tower.blocks) {
       if (b === this.selected) continue
       b.body.updateAABB()
@@ -983,23 +944,26 @@ export class Game {
     if (this.state === STATE.PULLING) {
       if (full) {
         this.canceling = true
-        this.pullTarget = 0
+        this.targetLong = 0
+        this.targetSide = 0
         return
       }
       // 右クリック：完全リセットではなく、ぐっと少しだけ押し込む。
-      // 基準は「いまブロックがある位置」。目標値を基準にすると、
-      // マウスが先へ行っている分だけ押し戻しにならない
-      const sign = Math.sign(this.pull) || Math.sign(this.pullTarget) || 1
-      const remain = Math.abs(this.pull) - PUSH_BACK.DISTANCE
+      // 基準は「いまブロックがある位置」。いま出ている向き（長手＋横の合成）
+      // に沿って押し戻すので、斜めに引いていても素直に戻る
+      const mag = Math.hypot(this.pullLong, this.pullSide)
 
       // ほぼ元の位置まで戻っていたら、そこで手を離す
-      if (remain <= 0.02 && Math.abs(this.pull) <= 0.14) {
+      if (mag - PUSH_BACK.DISTANCE <= 0.02 && mag <= 0.16) {
         this.canceling = true
-        this.pullTarget = 0
+        this.targetLong = 0
+        this.targetSide = 0
         return
       }
       // 元の位置より内側へは押し込まない
-      this.pullTarget = sign * Math.max(0, remain)
+      const k = Math.max(0, mag - PUSH_BACK.DISTANCE) / (mag || 1)
+      this.targetLong = this.pullLong * k
+      this.targetSide = this.pullSide * k
       this.pushBackT = PUSH_BACK.DURATION
       this.ui.say('ぐっ…', 1800)
       return
@@ -1009,18 +973,24 @@ export class Game {
       this.exitPlacement()
       const body = this.selected.body
       // 空中に浮いているので、いったん引き抜き軸の上へ戻してから押し込む
-      const back = this.extractedPull || MAX_PULL
+      // 抜いたときの位置（長手＋横の合成）へいったん戻してから押し込む
+      const bl = this.extractedLong || MAX_PULL
+      const bs = this.extractedSide || 0
+      const S = this.sideDir
       body.position.set(
-        this.origPos.x + this.pullDir.x * back,
-        this.origPos.y + this.pullDir.y * back,
-        this.origPos.z + this.pullDir.z * back
+        this.origPos.x + this.longDir.x * bl + (S ? S.x * bs : 0),
+        this.origPos.y + this.longDir.y * bl + (S ? S.y * bs : 0),
+        this.origPos.z + this.longDir.z * bl + (S ? S.z * bs : 0)
       )
       body.quaternion.copy(this.origQuat)
       setGrabbed(body)
       body.collisionResponse = true
 
-      this.pull = this.extractedPull || MAX_PULL
-      this.pullTarget = 0
+      this.pullLong = this.extractedLong || MAX_PULL
+      this.pullSide = this.extractedSide || 0
+      this.targetLong = 0
+      this.targetSide = 0
+      this.sideVel = 0
       // canceling を立てておかないと、抜けきった状態なので即座に配置モードへ戻ってしまう
       this.canceling = true
       this.state = STATE.PULLING
@@ -1040,37 +1010,68 @@ export class Game {
       this.ui.say('そーっと…そーっと…', 2000)
     }
 
-    // 目標値へ追従させる（急激な移動で物理が壊れるのを防ぐ）
-    const prevPull = this.pull
+    // --- 目標へ追従させる。軸は固定せず、長手方向と横方向を同時に動かす ---
+    const prevLong = this.pullLong
+    const prevSide = this.pullSide
+
     this.pushBackT = Math.max(0, this.pushBackT - dt)
     const pushing = this.pushBackT > 0
-    const isSide = this.pullAxis === 'SIDE' && !this.canceling && !pushing
+    const resist = this.pullResistance()
 
-    if (isSide) {
-      this.stepSidePull(dt, block)
+    if (pushing || this.canceling) {
+      // 押し戻し・巻き戻しのときは、そのまま目標へ寄せる
+      const rate = Math.min(1, dt * (pushing ? PUSH_BACK.SPEED : 6))
+      this.pullLong += (this.targetLong - this.pullLong) * rate
+      this.pullSide += (this.targetSide - this.pullSide) * rate
+      this.sideVel = 0
     } else {
-      // 押し込み中は少し速く、それ以外は通常の追従
-      const rate = pushing ? dt * PUSH_BACK.SPEED : dt * 6
-      this.pull += (this.pullTarget - this.pull) * Math.min(1, rate)
+      // 長手方向：抵抗のぶんだけゆっくりついてくる
+      const rate = Math.min(1, dt * PULL_TUNING.PULL_INPUT_SMOOTHING / (1 + 0.35 * (resist - 1)))
+      this.pullLong += (this.targetLong - this.pullLong) * rate
+      // 横方向：速度上限つきでじわじわ
+      if (this.sideDir) this.stepSide(dt, resist)
     }
 
-    const speed = (this.pull - prevPull) / dt
-    // 横抜き中と、押し込んだときは周囲へ力が伝わる
-    if (isSide) this.transmitShake(dt, speed)
-    else if (pushing) this.transmitShake(dt, speed, PUSH_BACK.FORCE)
-
-    const d = this.pullDir
-    const tx = this.origPos.x + d.x * this.pull
-    const ty = this.origPos.y + d.y * this.pull
-    const tz = this.origPos.z + d.z * this.pull
+    // --- 2軸を合成したワールド位置へ、速度で寄せる ---
+    const L = this.longDir
+    const S = this.sideDir
+    const sx = S ? S.x * this.pullSide : 0
+    const sy = S ? S.y * this.pullSide : 0
+    const sz = S ? S.z * this.pullSide : 0
+    const tx = this.origPos.x + L.x * this.pullLong + sx
+    const ty = this.origPos.y + L.y * this.pullLong + sy
+    const tz = this.origPos.z + L.z * this.pullLong + sz
 
     const body = block.body
     body.velocity.set((tx - body.position.x) / dt, (ty - body.position.y) / dt, (tz - body.position.z) / dt)
     const sp = body.velocity.length()
     if (sp > MAX_GRAB_SPEED) body.velocity.scale(MAX_GRAB_SPEED / sp, body.velocity)
 
-    if (isSide) {
-      // ほんの少しだけ傾くのを許す。当たるとカクッと傾いて緊張感が出る
+    // --- 周囲のブロックへ力を伝える ---
+    // タワーが持っていかれるのは主に「横へずらしたとき」。
+    // 長手方向へ引くぶんには逃げ道があるので、あまり伝わらない
+    const sideSpeed = (this.pullSide - prevSide) / dt
+    if (pushing) {
+      const longSpeed = (this.pullLong - prevLong) / dt
+      const sign = Math.sign(longSpeed) || 1
+      SHAKE_DIR.copy(this.longDir).multiplyScalar(sign)
+      this.transmitShake(dt, SHAKE_DIR, longSpeed, PUSH_BACK.FORCE)
+    } else if (this.sideDir && Math.abs(sideSpeed) > 1e-5) {
+      this.transmitShake(dt, this.sideDir, sideSpeed)
+    }
+
+    // ガイドの矢印はブロックについていく（2軸あることを見せ続ける）
+    if (this.pullGuide && this.pullGuide.visible) {
+      this.pullGuide.position.copy(block.mesh.position)
+      this.pullGuide.quaternion.copy(block.mesh.quaternion)
+    }
+
+    // --- 横へずれているあいだは、ほんの少し傾くのを許す ---
+    if (this.sideDir && this.pullSide > 0.02) {
+      if (body.fixedRotation) {
+        body.fixedRotation = false
+        body.updateMassProperties()
+      }
       const q = body.quaternion
       const o = this.origQuat
       const dot = Math.abs(q.x * o.x + q.y * o.y + q.z * o.z + q.w * o.w)
@@ -1086,7 +1087,7 @@ export class Game {
       body.quaternion.copy(this.origQuat)
     }
 
-    if (this.canceling && Math.abs(this.pull) < 0.02) {
+    if (this.canceling && Math.abs(this.pullLong) < 0.02 && this.pullSide < 0.02) {
       // 元に戻しきったので手を離す
       body.position.copy(this.origPos)
       body.quaternion.copy(this.origQuat)
@@ -1112,7 +1113,8 @@ export class Game {
     const block = this.selected
     const body = block.body
     // どちら側へ抜いたかを覚えておく（配置をやめたときに同じ側から戻すため）
-    this.extractedPull = this.pull
+    this.extractedLong = this.pullLong
+    this.extractedSide = this.pullSide
     this.hidePullGuide()
 
     setKinematic(body)
@@ -1277,7 +1279,6 @@ export class Game {
     this.settleShake = 0
     this.settleReacted = false
     this.pushBackT = 0
-    this.slipRemaining = 0
     this.state = STATE.SETTLING
   }
 

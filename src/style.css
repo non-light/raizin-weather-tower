@@ -699,6 +699,20 @@ body.title-mode #mascot { display: none; }
 }
 #ts-book:hover { border-color: var(--accent); }
 
+/* サイトのトップ（ゲーム一覧）へ戻る。控えめに置く */
+#ts-home {
+  margin-top: 4px;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: rgba(238, 242, 255, 0.5);
+  text-decoration: none;
+  border-radius: 8px;
+  transition: color 0.15s ease;
+}
+#ts-home:hover { color: var(--accent); }
+
 #title-reveal {
   margin: 4px auto 26px;
   min-height: 118px;
