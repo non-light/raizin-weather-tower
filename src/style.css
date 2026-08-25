@@ -1032,6 +1032,20 @@ body.title-mode #mascot { display: none; }
 }
 #retry:active { transform: translateY(2px); box-shadow: none; }
 
+/* ゲームオーバーからも一覧へ戻れるように。タイトル画面の #ts-home と同じ見た目。 */
+#go-home {
+  margin-top: 2px;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: rgba(238, 242, 255, 0.5);
+  text-decoration: none;
+  border-radius: 8px;
+  transition: color 0.15s ease;
+}
+#go-home:hover { color: var(--accent); }
+
 /* ---------- 図鑑：今回獲得したカード ---------- */
 .book-head-right { display: flex; gap: 10px; align-items: center; }
 #book-replay {
